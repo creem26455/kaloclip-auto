@@ -15,4 +15,7 @@ RUN mkdir -p /data/downloads
 
 EXPOSE 8080
 
-CMD ["sh", "-c", "gunicorn app:app --bind 0.0.0.0:${PORT:-8080} --timeout 600 --workers 1"]
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
+
+CMD ["/app/start.sh"]
