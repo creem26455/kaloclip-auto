@@ -214,11 +214,19 @@ class KaloclipBot:
         await page.wait_for_load_state("domcontentloaded")
         await page.wait_for_timeout(6000)
 
-        # Screenshot debug
+        # Screenshot + debug info
         try:
             ss_path = os.path.join(self.output_dir, "debug_form.png")
             await page.screenshot(path=ss_path, full_page=True)
-            self.log(f"📸 Screenshot: {ss_path} | URL: {page.url}")
+            title = await page.title()
+            self.log(f"📸 Screenshot saved | URL: {page.url} | Title: {title}")
+            # ดูว่า login หรือเปล่า
+            login_el = await page.query_selector('text="Login"')
+            login_th = await page.query_selector('text="เข้าสู่ระบบ"')
+            sign_in = await page.query_selector('text="Sign in"')
+            all_text = await page.evaluate("document.body.innerText")
+            self.log(f"  Login button: {bool(login_el or login_th or sign_in)}")
+            self.log(f"  Body snippet: {all_text[:300]}")
         except Exception as e:
             self.log(f"⚠️ screenshot error: {e}")
 

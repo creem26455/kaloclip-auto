@@ -127,6 +127,15 @@ def get_logs():
     return jsonify({"logs": logs})
 
 
+@app.route("/screenshot")
+def debug_screenshot():
+    from flask import send_file
+    path = os.path.join(OUTPUT_DIR, "debug_form.png")
+    if os.path.exists(path):
+        return send_file(path, mimetype="image/png")
+    return "No screenshot yet", 404
+
+
 @app.route("/status")
 def status():
     state = load_state()
