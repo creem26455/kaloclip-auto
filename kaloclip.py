@@ -673,30 +673,70 @@ class KaloclipBot:
     async def _download_video(self, page, product):
         self.log("⏳ รอ render... (1-5 นาที)")
 
-        # รอปุ่ม Download ปรากฏ (รองรับหลาย selector)
-        download_btn = None
-        for selector in [
+        # --- รอ 60 วินาที แล้ว screenshot + log buttons เพื่อรู้ว่าหน้าเป็นอะไร ---
+        await page.wait_for_timeout(60_000)
+        try:
+            ss_path = os.path.join(self.output_dir, "debug_after_create.png")
+            await page.screenshot(path=ss_path, full_page=True)
+            all_text = await page.evaluate("document.body.innerText")
+            btns = await page.evaluate(
+                """Array.from(document.querySelectorAll('button,a'))
+                   .filter(b => b.offsetParent !== null)
+                   .map(b => b.textContent.trim()).filter(t => t).join(' | ')"""
+            )
+            self.log(f"  📸 After-create 60s: {ss_path}")
+            self.log(f"  Body(200): {all_text[:200]}")
+            self.log(f"  Btns: {btns[:400]}")
+        except Exception as e:
+            self.log(f"  ⚠️ screenshot error: {e}")
+
+        # รอปุ่ม Download ปรากฏ (timeout 30s ต่อ selector — รวดเร็ว ไม่ค้าง)
+        SELECTORS = [
+            'button:has-text("ดาวน์โหลด")',
+            'a:has-text("ดาวน์โหลด")',
+            'button:has-text("Download")',
+            'a:has-text("Download")',
             'text="ดาวน์โหลด"',
             'text="Download"',
             'text="ดาวน์โหลดวิดีโอ"',
             'text="Download Video"',
-            '[class*="download"]',
-            'button:has-text("ดาวน์โหลด")',
-            'button:has-text("Download")',
-            'a:has-text("ดาวน์โหลด")',
-            'a:has-text("Download")',
-        ]:
+            'button:has-text("บันทึก")',
+            'button:has-text("Save")',
+            'button:has-text("Export")',
+            'button:has-text("ส่งออก")',
+            '[class*="download"]:not([class*="icon"])',
+        ]
+
+        download_btn = None
+        for attempt in range(3):  # ลอง 3 รอบ รอบละ ~6 นาที
+            for selector in SELECTORS:
+                try:
+                    download_btn = await page.wait_for_selector(selector, timeout=30_000)
+                    if download_btn and await download_btn.is_visible():
+                        self.log(f"  ✅ พบปุ่ม Download: {selector} (รอบ {attempt+1})")
+                        break
+                    download_btn = None
+                except Exception:
+                    continue
+            if download_btn:
+                break
+            # ยังไม่เจอ — screenshot ซ้ำแล้วรออีก 2 นาที
+            self.log(f"  ⏳ รอบ {attempt+1} ไม่เจอ — รออีก 2 นาที...")
+            await page.wait_for_timeout(120_000)
             try:
-                download_btn = await page.wait_for_selector(selector, timeout=300_000)
-                if download_btn:
-                    self.log(f"  ✅ พบปุ่ม Download: {selector}")
-                    break
+                ss2 = os.path.join(self.output_dir, f"debug_after_create_{attempt+2}.png")
+                await page.screenshot(path=ss2, full_page=True)
+                btns2 = await page.evaluate(
+                    """Array.from(document.querySelectorAll('button,a'))
+                       .filter(b => b.offsetParent !== null)
+                       .map(b => b.textContent.trim()).filter(t => t).join(' | ')"""
+                )
+                self.log(f"  📸 rnd{attempt+2}: {btns2[:400]}")
             except Exception:
-                continue
+                pass
 
         if not download_btn:
-            self.log("⚠️ ไม่พบปุ่ม Download หลังรอ 5 นาที")
-            # Screenshot เพื่อ debug
+            self.log("⚠️ ไม่พบปุ่ม Download หลังรอทุก selector")
             try:
                 ss_path = os.path.join(self.output_dir, "debug_render_done.png")
                 await page.screenshot(path=ss_path, full_page=True)
