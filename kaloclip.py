@@ -46,12 +46,11 @@ class KaloclipBot:
             "phoneRegion": "TH",
         }
 
-    async def inject_session(self, page, session):
-        """Inject localStorage session เข้า browser"""
-        await page.goto("https://www.kalodata.com", wait_until="domcontentloaded", timeout=60000)
-        await page.wait_for_timeout(2000)
-        js = ";\n".join([f"localStorage.setItem({json.dumps(k)}, {json.dumps(v)})" for k, v in session.items() if v])
-        await page.evaluate(js)
+    async def inject_session(self, context, session):
+        """Inject localStorage ผ่าน add_init_script — ทำงานก่อนโหลดทุกหน้า ไม่ต้อง navigate"""
+        js_lines = [f"localStorage.setItem({json.dumps(k)}, {json.dumps(v)})" for k, v in session.items() if v]
+        js = ";\n".join(js_lines)
+        await context.add_init_script(f"() => {{ try {{ {js}; }} catch(e) {{}} }}")
         self.log("✅ Inject session สำเร็จ")
 
     async def run(self):
@@ -78,8 +77,8 @@ class KaloclipBot:
             )
             page = await context.new_page()
 
-            # Inject session ก่อน
-            await self.inject_session(page, session)
+            # Inject session ก่อน (ใช้ context เพื่อให้ทำงานก่อนโหลดทุกหน้า)
+            await self.inject_session(context, session)
 
             try:
                 # ดึง Top 7 ใหม่ถ้าหมดรอบ
