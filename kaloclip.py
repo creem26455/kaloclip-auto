@@ -409,69 +409,77 @@ class KaloclipBot:
             self.log("  ⚠️ ไม่พบปุ่ม Generate")
 
     async def _set_antd_dropdown(self, page, trigger_contains, options, label=""):
-        """เปิด Ant Design dropdown (class=ant-select) แล้วเลือก option"""
+        """เปิด Ant Design dropdown แล้วเลือก option
+        ใช้ Playwright ElementHandle.click() เพื่อ trigger React synthetic events ถูกต้อง
+        """
         try:
-            # 1. คลิก trigger เพื่อเปิด dropdown
-            opened = await page.evaluate(f"""
-                () => {{
-                    const trig = {json.dumps(trigger_contains)};
-                    const selects = document.querySelectorAll('.ant-select');
-                    for (const sel of selects) {{
-                        if (sel.textContent.trim().includes(trig) && sel.offsetParent !== null) {{
-                            sel.click();
-                            return 'opened:' + sel.textContent.trim().substring(0, 30);
-                        }}
-                    }}
-                    return null;
-                }}
-            """)
-            if not opened:
+            # 1. หา ant-select ด้วย Playwright (ไม่ใช้ JS eval click)
+            target_el = None
+            selects = await page.query_selector_all('.ant-select')
+            for sel in selects:
+                try:
+                    text = await sel.inner_text()
+                    visible = await sel.is_visible()
+                    if trigger_contains in text and visible:
+                        target_el = sel
+                        self.log(f"  📍 {label}: found '{text.strip()[:30]}'")
+                        break
+                except Exception:
+                    continue
+
+            if not target_el:
                 self.log(f"  ⚠️ {label}: ไม่พบ dropdown '{trigger_contains}'")
                 return
-            self.log(f"  📍 {label}: {opened}")
 
-            # 2. รอ dropdown portal ปรากฏใน DOM (Ant Design render ผ่าน portal ใน body)
-            try:
-                await page.wait_for_selector(
-                    '.ant-select-dropdown:not(.ant-select-dropdown-hidden)',
-                    timeout=5000
-                )
-                self.log(f"  ✅ {label}: dropdown portal open")
-            except Exception:
-                self.log(f"  ⚠️ {label}: ไม่พบ portal — รอ 1.5s")
-                await page.wait_for_timeout(1500)
+            # 2. คลิกด้วย Playwright (trigger React synthetic events)
+            await target_el.click()
+            await page.wait_for_timeout(1200)
 
-            # 3. Log options ที่มีอยู่ใน dropdown (เพื่อ debug)
-            all_items = await page.evaluate("""
-                () => Array.from(document.querySelectorAll(
-                    '.ant-select-item, .ant-select-item-option, li[role="option"], [class*="select-item"]'
-                )).map(el => el.textContent.trim().substring(0, 20)).join(' | ')
+            # 3. Dump DOM หลัง click เพื่อดูว่า options ปรากฏที่ไหน
+            dom_after = await page.evaluate("""
+                () => {
+                    const results = {};
+                    // หา element ที่ visible ใหม่ๆ
+                    const candidates = document.querySelectorAll(
+                        '[class*="dropdown"], [class*="popup"], [class*="option"], ' +
+                        '[class*="menu"], [role="listbox"], [role="option"], ' +
+                        '[class*="list"], ul li'
+                    );
+                    const visible = [];
+                    candidates.forEach(el => {
+                        if (el.offsetParent !== null) {
+                            const cls = el.className ? el.className.substring(0,35) : el.tagName;
+                            const txt = el.textContent.trim().substring(0,25);
+                            if (txt) visible.push(cls + ':' + txt);
+                        }
+                    });
+                    results.visible = visible.slice(0,15).join(' || ');
+                    results.body_new = document.body.innerText.substring(0,200);
+                    return JSON.stringify(results);
+                }
             """)
-            self.log(f"  📋 {label} options: {all_items[:100]}")
+            self.log(f"  📊 {label} after-click: {dom_after[:300]}")
 
-            # 4. เลือก option
+            # 4. เลือก option ด้วย Playwright (ไม่ใช้ JS eval click)
             for opt in options:
-                found = await page.evaluate(f"""
-                    () => {{
-                        const text = {json.dumps(opt)};
-                        const items = document.querySelectorAll(
-                            '.ant-select-item, .ant-select-item-option, ' +
-                            'li[role="option"], [class*="select-item"], [class*="option-item"]'
-                        );
-                        for (const item of items) {{
-                            const t = item.textContent.trim();
-                            if (t === text || t.includes(text)) {{
-                                item.click();
-                                return 'selected:' + t.substring(0, 25);
-                            }}
-                        }}
-                        return null;
-                    }}
-                """)
-                if found:
-                    self.log(f"  ✅ {label}: {found}")
-                    await page.wait_for_timeout(500)
-                    return
+                # ลอง locator หลายแบบ
+                for selector in [
+                    f'.ant-select-item:has-text("{opt}")',
+                    f'.ant-select-item-option:has-text("{opt}")',
+                    f'[role="option"]:has-text("{opt}")',
+                    f'li:has-text("{opt}")',
+                    f'[class*="option"]:has-text("{opt}")',
+                    f'[class*="item"]:has-text("{opt}")',
+                ]:
+                    try:
+                        el = page.locator(selector).first
+                        if await el.is_visible(timeout=500):
+                            await el.click()
+                            self.log(f"  ✅ {label}: '{opt}' via {selector.split(':')[0]}")
+                            await page.wait_for_timeout(500)
+                            return
+                    except Exception:
+                        continue
 
             self.log(f"  ⚠️ {label}: ไม่พบ option {options}")
             await page.keyboard.press("Escape")
