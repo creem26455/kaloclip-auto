@@ -46,12 +46,45 @@ class KaloclipBot:
             "phoneRegion": "TH",
         }
 
+    def load_kwave_session(self):
+        """โหลด Kalowave (clip.kalowave.com) session จาก env vars"""
+        return {
+            "access_token": os.environ.get("KWAVE_ACCESS_TOKEN", ""),
+            "_l_KPLiPs": os.environ.get("KWAVE_TOKEN", ""),
+            "device_uuid": os.environ.get("KWAVE_DEVICE", ""),
+            "userName": os.environ.get("KALO_USER", ""),
+            "language": "th-TH",
+            "phonePrefix": "66",
+            "phoneRegion": "TH",
+        }
+
     async def inject_session(self, context, session):
-        """Inject localStorage ผ่าน add_init_script — ทำงานก่อนโหลดทุกหน้า ไม่ต้อง navigate"""
-        js_lines = [f"localStorage.setItem({json.dumps(k)}, {json.dumps(v)})" for k, v in session.items() if v]
-        js = ";\n".join(js_lines)
-        await context.add_init_script(f"() => {{ try {{ {js}; }} catch(e) {{}} }}")
-        self.log("✅ Inject session สำเร็จ")
+        """Inject localStorage ตาม domain — kalodata.com และ kalowave.com ใช้ token ต่างกัน"""
+        kwave = self.load_kwave_session()
+
+        # สร้าง JS สำหรับ kalodata.com
+        kalo_lines = [f"localStorage.setItem({json.dumps(k)}, {json.dumps(v)})"
+                      for k, v in session.items() if v]
+        kalo_js = ";\n".join(kalo_lines)
+
+        # สร้าง JS สำหรับ kalowave.com
+        kwave_lines = [f"localStorage.setItem({json.dumps(k)}, {json.dumps(v)})"
+                       for k, v in kwave.items() if v]
+        kwave_js = ";\n".join(kwave_lines)
+
+        # Inject ตาม domain
+        script = f"""() => {{
+            try {{
+                var host = window.location.hostname;
+                if (host.includes('kalowave.com')) {{
+                    {kwave_js};
+                }} else {{
+                    {kalo_js};
+                }}
+            }} catch(e) {{}}
+        }}"""
+        await context.add_init_script(script)
+        self.log("✅ Inject session สำเร็จ (kalodata + kalowave)")
 
     async def run(self):
         state = self.load_state()
