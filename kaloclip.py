@@ -337,11 +337,14 @@ class KaloclipBot:
         # Step 1: ตั้งภาษา = ภาษาไทย
         await self._select_dropdown(page, ["ภาษาไทย", "Thai", "th"], "ภาษา")
 
-        # กดถัดไป (Step 1 → Step 2)
+        # ตั้ง video duration = 20S (คลิก duration dropdown ที่ bottom bar)
+        await self._set_video_duration(page, "20")
+
+        # กดถัดไป (Step 1 → Step 2 หรือ Step 2 → Step 3)
         await self._click_next(page)
         await page.wait_for_timeout(3000)
 
-        # Step 2 (ตั้งค่าวิดีโอ) — กดถัดไปอีกครั้ง (ค่าเริ่มต้น 9:16, 15S, 720P ใช้ได้เลย)
+        # Step 2/3 — กดถัดไปอีกครั้ง ถ้ายังมี
         await self._click_next(page)
         await page.wait_for_timeout(3000)
 
@@ -353,6 +356,27 @@ class KaloclipBot:
                 self.log(f"  กด '{btn_text}'")
                 await page.wait_for_timeout(2000)
                 break
+
+    async def _set_video_duration(self, page, seconds="20"):
+        """ตั้ง duration ที่ bottom bar เป็น 20S"""
+        self.log(f"  ⏱ ตั้ง duration = {seconds}S...")
+        try:
+            # คลิก duration dropdown ที่ bottom bar (มักแสดงเป็น "15 S" หรือ "20 S")
+            for current in ["15 S", "15S", "15", "10 S", "10S"]:
+                btn = await page.query_selector(f'text="{current}"')
+                if btn:
+                    await btn.click()
+                    await page.wait_for_timeout(500)
+                    # เลือก 20S จาก dropdown ที่เปิดออกมา
+                    for opt in [f"{seconds} S", f"{seconds}S", seconds]:
+                        el = await page.query_selector(f'text="{opt}"')
+                        if el:
+                            await el.click()
+                            self.log(f"  ✅ duration = {seconds}S")
+                            return
+            self.log(f"  ⚠️ ไม่พบ duration dropdown")
+        except Exception as e:
+            self.log(f"  ⚠️ set duration error: {e}")
 
     async def _select_dropdown(self, page, options, label="dropdown"):
         """เลือก dropdown โดย text options (รองรับทั้ง native select และ custom dropdown)"""
