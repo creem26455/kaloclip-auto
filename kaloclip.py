@@ -84,7 +84,17 @@ class KaloclipBot:
             }} catch(e) {{}}
         }}"""
         await context.add_init_script(script)
-        self.log("✅ Inject session สำเร็จ (kalodata + kalowave)")
+
+        # เพิ่ม Authorization: Bearer header ให้ทุก API request ไป kalowave.com
+        access_token = kwave.get("access_token", "")
+        if access_token:
+            async def add_auth_header(route):
+                headers = {**route.request.headers, "Authorization": f"Bearer {access_token}"}
+                await route.continue_(headers=headers)
+            await context.route("**/kalowave.com/**", add_auth_header)
+            self.log("✅ Inject session สำเร็จ (kalodata + kalowave + Bearer token)")
+        else:
+            self.log("✅ Inject session สำเร็จ (kalodata + kalowave)")
 
     async def run(self):
         state = self.load_state()
@@ -323,7 +333,9 @@ class KaloclipBot:
         await self._click_next(page)
         await page.wait_for_timeout(2000)
 
-        # Step 2 — ตั้งค่าวิดีโอ (ปล่อย default: 9:16, 20s, 720p)
+        # Step 2 — ตั้งค่าวิดีโอ: ตั้งภาษาไทย + 9:16
+        await page.wait_for_timeout(2000)
+        await self._set_video_language(page)
         await self._click_next(page)
         await page.wait_for_timeout(2000)
 
@@ -334,6 +346,41 @@ class KaloclipBot:
                 await btn.click()
                 self.log(f"  กด '{btn_text}'")
                 break
+
+    async def _set_video_language(self, page):
+        """ตั้งภาษา script เป็นไทยใน Video Settings"""
+        self.log("  🌏 ตั้งภาษาไทย...")
+        # ลองหา dropdown ภาษา
+        for lang_sel in [
+            'text="Thai"', 'text="ไทย"', 'text="th"',
+            '[class*="language"] [value="th"]',
+            'select[name*="lang"]',
+        ]:
+            try:
+                el = await page.query_selector(lang_sel)
+                if el:
+                    await el.click()
+                    self.log(f"  ✅ เลือกภาษาไทย: {lang_sel}")
+                    await page.wait_for_timeout(500)
+                    return
+            except Exception:
+                pass
+
+        # ลอง select element
+        selects = await page.query_selector_all("select")
+        for sel in selects:
+            try:
+                options = await sel.query_selector_all("option")
+                for opt in options:
+                    val = await opt.get_attribute("value") or ""
+                    text = await opt.inner_text()
+                    if "th" in val.lower() or "ไทย" in text or "Thai" in text:
+                        await sel.select_option(value=val)
+                        self.log(f"  ✅ select ภาษาไทย: {val}")
+                        return
+            except Exception:
+                pass
+        self.log("  ⚠️ ไม่พบ dropdown ภาษา (อาจยังไม่โหลด)")
 
     async def _click_next(self, page):
         for text in ["ถัดไป", "Next", "ต่อไป"]:
