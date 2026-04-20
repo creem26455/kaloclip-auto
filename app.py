@@ -100,7 +100,7 @@ def run_now():
     global running
     if running:
         return jsonify({"ok": False, "msg": "กำลังรันอยู่แล้ว..."})
-    if not os.path.exists(COOKIES_FILE):
+    if not os.path.exists(COOKIES_FILE) and not os.environ.get("KALO_TOKEN"):
         return jsonify({"ok": False, "msg": "ยังไม่ได้ตั้งค่า Cookies!"})
 
     def _run():
