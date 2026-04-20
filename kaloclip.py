@@ -359,23 +359,21 @@ class KaloclipBot:
         await page.wait_for_timeout(5000)
 
         # ===== STEP 3 (ตรวจสอบสคริปต์) =====
-        # รอ script generate เสร็จ — Kaloclip ใช้เวลา ~2-3 นาที
+        # รอ script generate เสร็จ — ปุ่มจะเปลี่ยนจาก "กำลังโหลด..." → "สร้าง +10"
         self.log("  [Step 3] รอ script generate เสร็จ (สูงสุด 5 นาที)...")
         try:
             await page.wait_for_function(
+                # ปุ่ม generate จริงๆ คือ "สร้าง" (+ credit cost) ไม่ใช่ "สร้างวิดีโอ"
                 """() => Array.from(document.querySelectorAll('button'))
-                    .some(b => b.textContent.trim().includes('สร้างวิดีโอ') && !b.disabled)""",
-                timeout=300_000  # 5 นาที
+                    .some(b => b.textContent.trim().startsWith('สร้าง') && !b.disabled)""",
+                timeout=300_000
             )
-            self.log("  ✅ Script โหลดเสร็จ — พบปุ่ม สร้างวิดีโอ")
+            self.log("  ✅ Script โหลดเสร็จ — พบปุ่ม สร้าง")
         except Exception:
             self.log("  ⚠️ Script รอนาน — ดำเนินการต่อ")
 
-        # ตั้ง duration = 20S ใน bottom bar (Ant Design dropdown: "8 S" → "20 S")
-        await self._set_antd_dropdown(page, "8 S", ["20 S", "20S"], "duration")
-
-        # ตั้ง quality = 720P ใน bottom bar ("1080P" → "720P")
-        await self._set_antd_dropdown(page, "1080P", ["720P", "720p"], "quality")
+        # ตั้ง duration = 20S (ลองทั้ง Step 3 bottom bar)
+        await self._set_antd_dropdown(page, "8 S", ["20 S", "20S", "20"], "duration")
 
         # Screenshot Step 3 หลังตั้งค่า
         try:
@@ -389,10 +387,10 @@ class KaloclipBot:
         except Exception:
             pass
 
-        # กด สร้างวิดีโอ
-        self.log("  [Step 3] กด สร้างวิดีโอ...")
+        # กด สร้าง (ปุ่มจริงคือ "สร้าง +10" หรือ "สร้าง +XX")
+        self.log("  [Step 3] กด สร้าง...")
         clicked = False
-        for btn_text in ["สร้างวิดีโอ", "Generate Video", "Generate", "ยืนยัน", "เริ่มสร้าง"]:
+        for btn_text in ["สร้าง", "สร้างวิดีโอ", "Generate Video", "Generate", "ยืนยัน", "เริ่มสร้าง"]:
             try:
                 btn = await page.query_selector(f'button:has-text("{btn_text}")')
                 if not btn:
@@ -406,7 +404,22 @@ class KaloclipBot:
             except Exception as e:
                 self.log(f"  ⚠️ กด '{btn_text}': {e}")
         if not clicked:
-            self.log("  ⚠️ ไม่พบปุ่ม Generate")
+            self.log("  ⚠️ ไม่พบปุ่ม สร้าง — ลอง locator สำรอง")
+            # fallback: ลอง locator แบบ startsWith
+            try:
+                btns = await page.query_selector_all('button')
+                for b in btns:
+                    txt = (await b.inner_text()).strip()
+                    if txt.startswith("สร้าง") and await b.is_visible():
+                        await b.click(timeout=5000)
+                        self.log(f"  ✅ fallback กด '{txt}'")
+                        clicked = True
+                        await page.wait_for_timeout(2000)
+                        break
+            except Exception as ef:
+                self.log(f"  ⚠️ fallback error: {ef}")
+            if not clicked:
+                self.log("  ❌ ไม่พบปุ่ม Generate เลย")
 
     async def _set_antd_dropdown(self, page, trigger_contains, options, label=""):
         """เปิด Ant Design dropdown แล้วเลือก option
