@@ -114,17 +114,17 @@ class KaloclipBot:
                 product = state["products"][idx]
                 self.log(f"🎯 สินค้า #{product['rank']}: {product['name'][:50]}")
 
-                # ไปหน้า Kaloclip
-                ok = await self._open_kaloclip(page, product)
-                if not ok:
+                # ไปหน้า Kaloclip (คืน page ที่ถูก navigate ไป อาจเป็น popup)
+                kaloclip_page = await self._open_kaloclip(page, product)
+                if not kaloclip_page:
                     self.log("❌ เปิด Kaloclip ไม่ได้")
                     return
 
                 # กรอกฟอร์ม
-                await self._fill_form(page)
+                await self._fill_form(kaloclip_page)
 
                 # รอ render + download
-                filepath = await self._download_video(page, product)
+                filepath = await self._download_video(kaloclip_page, product)
 
                 # อัปเดต state
                 state["index"] = idx + 1
@@ -197,17 +197,55 @@ class KaloclipBot:
         return products
 
     async def _open_kaloclip(self, page, product):
-        # ใช้ id หรือ product_id (รองรับทั้งสองแบบ)
         pid = product.get("id") or product.get("product_id")
-        if pid:
-            kaloclip_url = f"https://clip.kalowave.com/video-creating?productId={pid}&country=th"
-            self.log(f"🔗 เปิด Kaloclip: {kaloclip_url}")
-            await page.goto(kaloclip_url, wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(4000)
-            return True
+        if not pid:
+            self.log("⚠️ ไม่มี product id")
+            return None
 
-        self.log("⚠️ ไม่มี product id")
-        return False
+        # ไป product detail บน kalodata.com ก่อน เพื่อให้ Kaloclip โหลดข้อมูลสินค้าได้
+        detail_url = f"https://www.kalodata.com/product/detail?productId={pid}&region=TH"
+        self.log(f"🔗 เปิด Kalodata product detail: {detail_url}")
+        await page.goto(detail_url, wait_until="domcontentloaded", timeout=60000)
+        await page.wait_for_timeout(5000)
+        self.log(f"📄 Title: {await page.title()} | URL: {page.url}")
+
+        # หาปุ่ม Kaloclip/AI Video บน kalodata.com
+        kaloclip_btn = None
+        for sel in [
+            'a:has-text("Kaloclip")', 'button:has-text("Kaloclip")',
+            'a:has-text("AI Video")', 'button:has-text("AI Video")',
+            '[class*="kaloclip"]', '[class*="clip"]',
+            'a[href*="kalowave.com"]',
+        ]:
+            try:
+                el = await page.query_selector(sel)
+                if el:
+                    kaloclip_btn = el
+                    self.log(f"  ✅ พบปุ่ม: {sel}")
+                    break
+            except Exception:
+                pass
+
+        if kaloclip_btn:
+            self.log("  → คลิกปุ่ม Kaloclip...")
+            try:
+                # รอ popup ที่จะเปิดขึ้นมา
+                async with page.expect_popup(timeout=10000) as popup_info:
+                    await kaloclip_btn.click()
+                new_page = await popup_info.value
+                await new_page.wait_for_load_state("domcontentloaded", timeout=30000)
+                await new_page.wait_for_timeout(5000)
+                self.log(f"  ✅ Kaloclip popup: {new_page.url}")
+                return new_page
+            except Exception as e:
+                self.log(f"  ⚠️ popup ไม่เปิด: {e} — ลอง navigate ตรงๆ")
+
+        # Fallback: navigate ตรงไป Kaloclip URL
+        kaloclip_url = f"https://clip.kalowave.com/video-creating?productId={pid}&country=th"
+        self.log(f"⚠️ Fallback → {kaloclip_url}")
+        await page.goto(kaloclip_url, wait_until="domcontentloaded", timeout=60000)
+        await page.wait_for_timeout(6000)
+        return page
 
     async def _fill_form(self, page):
         self.log("📝 กรอกฟอร์ม...")
