@@ -82,7 +82,8 @@ class KaloclipBot:
 
             try:
                 # ดึง Top 7 ใหม่ถ้าหมดรอบ
-                if not state.get("products") or state.get("index", 0) >= TOP_N:
+                cycle_complete = state.get("index", 0) >= TOP_N
+                if not state.get("products") or cycle_complete:
                     self.log("🔄 ดึง Top 7 สินค้าใหม่...")
                     env_products = os.environ.get("KALO_PRODUCTS", "")
                     if env_products:
@@ -94,7 +95,9 @@ class KaloclipBot:
                             state["products"] = await self._get_top_products(page)
                     else:
                         state["products"] = await self._get_top_products(page)
-                    state["index"] = 0
+                    # รีเซต index เฉพาะตอนครบรอบ ถ้าโหลดครั้งแรกให้คงค่าที่ตั้งไว้
+                    if cycle_complete:
+                        state["index"] = 0
                     self.save_state(state)
 
                 if not state["products"]:
@@ -202,8 +205,8 @@ class KaloclipBot:
 
     async def _fill_form(self, page):
         self.log("📝 กรอกฟอร์ม...")
-        await page.wait_for_load_state("networkidle")
-        await page.wait_for_timeout(2000)
+        await page.wait_for_load_state("domcontentloaded")
+        await page.wait_for_timeout(4000)
 
         # Step 1 — เลือกจุดขายทั้งหมด
         checkboxes = await page.query_selector_all('input[type="checkbox"]')
