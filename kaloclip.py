@@ -85,7 +85,16 @@ class KaloclipBot:
                 # ดึง Top 7 ใหม่ถ้าหมดรอบ
                 if not state.get("products") or state.get("index", 0) >= TOP_N:
                     self.log("🔄 ดึง Top 7 สินค้าใหม่...")
-                    state["products"] = await self._get_top_products(page)
+                    env_products = os.environ.get("KALO_PRODUCTS", "")
+                    if env_products:
+                        try:
+                            state["products"] = json.loads(env_products)
+                            self.log(f"✅ โหลด {len(state['products'])} สินค้าจาก env")
+                        except Exception as e:
+                            self.log(f"⚠️ parse env products error: {e}")
+                            state["products"] = await self._get_top_products(page)
+                    else:
+                        state["products"] = await self._get_top_products(page)
                     state["index"] = 0
                     self.save_state(state)
 
