@@ -16,6 +16,6 @@ RUN mkdir -p /data/downloads
 EXPOSE 8080
 
 COPY start.sh /app/start.sh
-RUN chmod +x /app/start.sh
+RUN sed -i 's/\r//' /app/start.sh && chmod +x /app/start.sh
 
 CMD ["/app/start.sh"]
