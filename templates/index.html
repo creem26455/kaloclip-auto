@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kaloclip Auto Dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', sans-serif; background: #0f0f0f; color: #e0e0e0; padding: 20px; }
+  .container { max-width: 800px; margin: 0 auto; }
+  h1 { color: #ff6b35; margin-bottom: 4px; font-size: 1.6rem; }
+  .subtitle { color: #888; margin-bottom: 24px; font-size: 0.9rem; }
+
+  .card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+  .card h2 { color: #ccc; font-size: 1rem; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; }
+
+  .status-row { display: flex; gap: 16px; flex-wrap: wrap; }
+  .stat { background: #222; border-radius: 8px; padding: 12px 18px; flex: 1; min-width: 140px; }
+  .stat-label { font-size: 0.75rem; color: #888; margin-bottom: 4px; }
+  .stat-value { font-size: 1.3rem; font-weight: bold; color: #ff6b35; }
+
+  .badge-ok { color: #4caf50; }
+  .badge-warn { color: #ff9800; }
+  .badge-run { color: #2196f3; animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+
+  textarea { width: 100%; background: #111; color: #e0e0e0; border: 1px solid #333; border-radius: 8px; padding: 12px; font-size: 0.85rem; resize: vertical; font-family: monospace; }
+
+  .btn { display: inline-block; padding: 10px 24px; border-radius: 8px; border: none; cursor: pointer; font-size: 0.95rem; font-weight: 600; transition: opacity 0.2s; }
+  .btn:hover { opacity: 0.85; }
+  .btn-primary { background: #ff6b35; color: white; }
+  .btn-green { background: #4caf50; color: white; }
+  .btn-gray { background: #333; color: #ccc; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .instructions { background: #111; border-left: 3px solid #ff6b35; padding: 12px 16px; border-radius: 0 8px 8px 0; font-size: 0.85rem; line-height: 1.8; }
+  .instructions code { background: #222; padding: 1px 6px; border-radius: 4px; color: #ff9800; }
+
+  .log-box { background: #0a0a0a; border: 1px solid #222; border-radius: 8px; padding: 12px; height: 220px; overflow-y: auto; font-family: monospace; font-size: 0.8rem; line-height: 1.6; }
+  .log-line { color: #aaa; }
+  .log-line.ok { color: #4caf50; }
+  .log-line.err { color: #f44336; }
+  .log-line.info { color: #2196f3; }
+
+  #result { margin-top: 10px; font-size: 0.9rem; padding: 8px 12px; border-radius: 6px; display: none; }
+  .result-ok { background: #1b3a1b; color: #4caf50; }
+  .result-err { background: #3a1b1b; color: #f44336; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🎬 Kaloclip Auto</h1>
+  <p class="subtitle">สร้างคลิปสินค้าขายดีอัตโนมัติจาก Kalodata</p>
+
+  <!-- Status -->
+  <div class="card">
+    <h2>สถานะ</h2>
+    <div class="status-row">
+      <div class="stat">
+        <div class="stat-label">Session Cookies</div>
+        <div class="stat-value {% if has_cookies %}badge-ok{% else %}badge-warn{% endif %}">
+          {% if has_cookies %}✅ พร้อม{% else %}⚠️ ยังไม่ได้ตั้ง{% endif %}
+        </div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">รันล่าสุด</div>
+        <div class="stat-value" style="font-size:0.95rem;">{{ state.last_run or '—' }}</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">สินค้ารอบนี้</div>
+        <div class="stat-value">{{ state.index }}/7</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">สถานะระบบ</div>
+        <div class="stat-value {% if running %}badge-run{% else %}badge-ok{% endif %}">
+          {% if running %}⚙️ กำลังรัน{% else %}✅ ว่าง{% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cookie Setup -->
+  <div class="card">
+    <h2>⚙️ ขั้นตอนที่ 1 — ตั้งค่า Cookies (ทำครั้งเดียว)</h2>
+    <div class="instructions" style="margin-bottom: 14px;">
+      1. เปิด <code>kalodata.com</code> แล้ว Login ด้วย Gmail<br>
+      2. กด <code>F12</code> → แท็บ <code>Application</code> → <code>Cookies</code> → <code>https://www.kalodata.com</code><br>
+      3. คลิกขวาที่ช่อง Cookies → <code>Copy all as JSON</code><br>
+      &nbsp;&nbsp;&nbsp;หรือเปิด Console แล้วพิมพ์: <code>copy(document.cookie)</code><br>
+      4. วางใน textbox ด้านล่าง แล้วกด บันทึก
+    </div>
+    <textarea id="cookieInput" rows="4" placeholder='วาง Cookies ที่นี่... (รูปแบบ: name=value; name2=value2 หรือ JSON array)'></textarea>
+    <br><br>
+    <button class="btn btn-primary" onclick="saveCookies()">💾 บันทึก Cookies</button>
+    <div id="result"></div>
+  </div>
+
+  <!-- Run Now -->
+  <div class="card">
+    <h2>▶️ ขั้นตอนที่ 2 — รันเลย</h2>
+    <p style="color:#888; margin-bottom:14px; font-size:0.9rem;">
+      กดปุ่มด้านล่างเพื่อเริ่มสร้างคลิปสินค้า #{{ (state.index or 0) + 1 }} ของวันนี้ทันที
+    </p>
+    <button class="btn btn-green" onclick="runNow()" id="runBtn" {% if running or not has_cookies %}disabled{% endif %}>
+      {% if running %}⚙️ กำลังรันอยู่...{% else %}🚀 Run Now{% endif %}
+    </button>
+    {% if not has_cookies %}
+    <span style="color:#ff9800; margin-left:12px; font-size:0.85rem;">⚠️ ตั้งค่า Cookies ก่อน</span>
+    {% endif %}
+  </div>
+
+  <!-- Logs -->
+  <div class="card">
+    <h2>📋 Log</h2>
+    <div class="log-box" id="logBox">
+      {% for line in logs %}
+      <div class="log-line {% if '✅' in line or 'เสร็จ' in line %}ok{% elif '❌' in line or 'Error' in line %}err{% elif '🎯' in line or '📊' in line %}info{% endif %}">{{ line.strip() }}</div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+
+<script>
+async function saveCookies() {
+  const raw = document.getElementById('cookieInput').value.trim();
+  if (!raw) return showResult('กรอก Cookies ก่อนนะครับ', false);
+
+  const res = await fetch('/save-cookies', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({cookies: raw})
+  });
+  const data = await res.json();
+  showResult(data.msg, data.ok);
+  if (data.ok) setTimeout(() => location.reload(), 1500);
+}
+
+async function runNow() {
+  document.getElementById('runBtn').disabled = true;
+  document.getElementById('runBtn').textContent = '⚙️ กำลังเริ่ม...';
+  const res = await fetch('/run', {method: 'POST'});
+  const data = await res.json();
+  showResult(data.msg, data.ok);
+  if (data.ok) pollLogs();
+}
+
+function showResult(msg, ok) {
+  const el = document.getElementById('result');
+  el.textContent = msg;
+  el.className = ok ? 'result-ok' : 'result-err';
+  el.style.display = 'block';
+}
+
+function pollLogs() {
+  setInterval(async () => {
+    const res = await fetch('/logs');
+    const data = await res.json();
+    const box = document.getElementById('logBox');
+    box.innerHTML = data.logs.map(l => {
+      let cls = '';
+      if (l.includes('✅') || l.includes('เสร็จ')) cls = 'ok';
+      else if (l.includes('❌') || l.includes('Error')) cls = 'err';
+      else if (l.includes('🎯') || l.includes('📊')) cls = 'info';
+      return `<div class="log-line ${cls}">${l.trim()}</div>`;
+    }).join('');
+    box.scrollTop = box.scrollHeight;
+  }, 3000);
+}
+
+// Auto-scroll log
+document.getElementById('logBox').scrollTop = 9999;
+</script>
+</body>
+</html>

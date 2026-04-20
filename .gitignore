@@ -1,0 +1,7 @@
+data/
+__pycache__/
+*.pyc
+session_cookies.json
+state.json
+downloads/
+.env
