@@ -91,7 +91,7 @@ class KaloclipBot:
             async def add_auth_header(route):
                 headers = {**route.request.headers, "Authorization": f"Bearer {access_token}"}
                 await route.continue_(headers=headers)
-            await context.route("**/kalowave.com/**", add_auth_header)
+            await context.route("**kalowave.com**", add_auth_header)
             self.log("✅ Inject session สำเร็จ (kalodata + kalowave + Bearer token)")
         else:
             self.log("✅ Inject session สำเร็จ (kalodata + kalowave)")
@@ -311,41 +311,74 @@ class KaloclipBot:
         except Exception as e:
             self.log(f"⚠️ screenshot error: {e}")
 
-        # Step 1 — รอให้ checkbox โหลด (SPA อาจช้า)
+        # รอให้จุดขาย (checkboxes) โหลด — สัญญาณว่า auth ผ่านและข้อมูลสินค้าโหลดแล้ว
         try:
-            await page.wait_for_selector('input[type="checkbox"]', timeout=15000)
+            await page.wait_for_selector('input[type="checkbox"]', timeout=20000)
+            self.log("  ✅ ฟอร์มโหลดแล้ว (พบ checkbox)")
         except Exception:
-            self.log("⚠️ ไม่พบ checkbox หลังรอ 15s")
+            self.log("⚠️ ไม่พบ checkbox หลังรอ 20s — อาจยังไม่ได้ auth")
 
+        # Step 1: เลือกจุดขายทั้งหมด
         checkboxes = await page.query_selector_all('input[type="checkbox"]')
         checked_count = 0
         for cb in checkboxes:
             try:
                 if not await cb.is_checked():
                     await cb.click()
-                    await page.wait_for_timeout(150)
+                    await page.wait_for_timeout(200)
                     checked_count += 1
             except Exception:
                 pass
         self.log(f"  เลือก {len(checkboxes)} จุดขาย (checked {checked_count})")
 
-        # กดถัดไป
-        await self._click_next(page)
-        await page.wait_for_timeout(2000)
+        # Step 1: ตั้งกลุ่มตลาด = ไทย
+        await self._select_dropdown(page, ["ไทย", "Thailand", "TH"], "กลุ่มตลาดเป้าหมาย")
 
-        # Step 2 — ตั้งค่าวิดีโอ: ตั้งภาษาไทย + 9:16
-        await page.wait_for_timeout(2000)
-        await self._set_video_language(page)
-        await self._click_next(page)
-        await page.wait_for_timeout(2000)
+        # Step 1: ตั้งภาษา = ภาษาไทย
+        await self._select_dropdown(page, ["ภาษาไทย", "Thai", "th"], "ภาษา")
 
-        # Step 3 — สร้างวิดีโอ
-        for btn_text in ["สร้างวิดีโอ", "Generate", "ยืนยัน", "เริ่มสร้าง"]:
+        # กดถัดไป (Step 1 → Step 2)
+        await self._click_next(page)
+        await page.wait_for_timeout(3000)
+
+        # Step 2 (ตั้งค่าวิดีโอ) — กดถัดไปอีกครั้ง (ค่าเริ่มต้น 9:16, 15S, 720P ใช้ได้เลย)
+        await self._click_next(page)
+        await page.wait_for_timeout(3000)
+
+        # Step 3 (ตรวจสอบสคริปต์) — กด Generate/สร้างวิดีโอ
+        for btn_text in ["สร้างวิดีโอ", "Generate Video", "Generate", "ยืนยัน", "เริ่มสร้าง", "ถัดไป"]:
             btn = await page.query_selector(f'text="{btn_text}"')
             if btn:
                 await btn.click()
                 self.log(f"  กด '{btn_text}'")
+                await page.wait_for_timeout(2000)
                 break
+
+    async def _select_dropdown(self, page, options, label="dropdown"):
+        """เลือก dropdown โดย text options (รองรับทั้ง native select และ custom dropdown)"""
+        for opt_text in options:
+            try:
+                # ลอง native select ก่อน
+                selects = await page.query_selector_all("select")
+                for sel in selects:
+                    opts = await sel.query_selector_all("option")
+                    for o in opts:
+                        t = (await o.inner_text()).strip()
+                        v = await o.get_attribute("value") or ""
+                        if opt_text.lower() in t.lower() or opt_text.lower() in v.lower():
+                            await sel.select_option(value=v)
+                            self.log(f"  ✅ {label}: เลือก '{t}'")
+                            return
+                # ลอง custom dropdown (คลิก element ที่มี text นั้น)
+                el = await page.query_selector(f'text="{opt_text}"')
+                if el:
+                    await el.click()
+                    self.log(f"  ✅ {label}: คลิก '{opt_text}'")
+                    await page.wait_for_timeout(300)
+                    return
+            except Exception:
+                pass
+        self.log(f"  ⚠️ {label}: ไม่พบ option {options}")
 
     async def _set_video_language(self, page):
         """ตั้งภาษา script เป็นไทยใน Video Settings"""
