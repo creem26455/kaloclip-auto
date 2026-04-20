@@ -48,8 +48,8 @@ class KaloclipBot:
 
     async def inject_session(self, page, session):
         """Inject localStorage session เข้า browser"""
-        await page.goto("https://www.kalodata.com", wait_until="domcontentloaded")
-        await page.wait_for_timeout(1000)
+        await page.goto("https://www.kalodata.com", wait_until="domcontentloaded", timeout=60000)
+        await page.wait_for_timeout(2000)
         js = ";\n".join([f"localStorage.setItem({json.dumps(k)}, {json.dumps(v)})" for k, v in session.items() if v])
         await page.evaluate(js)
         self.log("✅ Inject session สำเร็จ")
@@ -145,8 +145,8 @@ class KaloclipBot:
                 await browser.close()
 
     async def _get_top_products(self, page):
-        await page.goto(KALODATA_URL, wait_until="networkidle")
-        await page.wait_for_timeout(4000)
+        await page.goto(KALODATA_URL, wait_until="domcontentloaded", timeout=60000)
+        await page.wait_for_timeout(5000)
 
         products = []
 
@@ -189,32 +189,16 @@ class KaloclipBot:
         return products
 
     async def _open_kaloclip(self, page, product):
-        # วิธีที่ 1: ถ้ามี product_id → เปิด URL ตรงเลย
-        if product.get("product_id"):
-            kaloclip_url = f"https://clip.kalowave.com/video-creating?productId={product['product_id']}&country=th"
+        # ใช้ id หรือ product_id (รองรับทั้งสองแบบ)
+        pid = product.get("id") or product.get("product_id")
+        if pid:
+            kaloclip_url = f"https://clip.kalowave.com/video-creating?productId={pid}&country=th"
             self.log(f"🔗 เปิด Kaloclip: {kaloclip_url}")
-            await page.goto(kaloclip_url, wait_until="networkidle")
-            await page.wait_for_timeout(3000)
+            await page.goto(kaloclip_url, wait_until="domcontentloaded", timeout=60000)
+            await page.wait_for_timeout(4000)
             return True
 
-        # วิธีที่ 2: ไปหน้า ranking → hover row → กดปุ่ม Kaloclip
-        await page.goto(KALODATA_URL, wait_until="networkidle")
-        await page.wait_for_timeout(3000)
-
-        rows = await page.query_selector_all("table tbody tr")
-        if product["row_index"] < len(rows):
-            row = rows[product["row_index"]]
-            await row.hover()
-            await page.wait_for_timeout(500)
-
-            for selector in ['[class*="kaloclip"]', 'text="Kaloclip"', 'text="สร้างวิดีโอ"']:
-                btn = await row.query_selector(selector)
-                if btn:
-                    await btn.click()
-                    await page.wait_for_timeout(2000)
-                    return True
-
-        self.log("⚠️ หาปุ่ม Kaloclip ไม่เจอ")
+        self.log("⚠️ ไม่มี product id")
         return False
 
     async def _fill_form(self, page):
