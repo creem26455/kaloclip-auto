@@ -133,6 +133,19 @@ def status():
     return jsonify({"running": running, "state": state})
 
 
+@app.route("/set-index", methods=["POST"])
+def set_index():
+    """ตั้งค่า index สินค้าที่จะทำต่อ (0=Top1, 1=Top2, ...)"""
+    data = request.get_json() or {}
+    idx = data.get("index", 0)
+    state = load_state()
+    state["index"] = int(idx)
+    save_state(state)
+    product_num = int(idx) + 1
+    append_log(f"✅ ตั้ง index เป็น {idx} (สินค้า #{product_num})")
+    return jsonify({"ok": True, "msg": f"จะเริ่มจากสินค้า #{product_num} ในรอบถัดไป"})
+
+
 # ===== Kaloclip Logic =====
 
 async def run_kaloclip():
