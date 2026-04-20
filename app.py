@@ -56,7 +56,7 @@ def append_log(msg):
 @app.route("/")
 def index():
     state = load_state()
-    has_cookies = os.path.exists(COOKIES_FILE)
+    has_cookies = os.path.exists(COOKIES_FILE) or bool(os.environ.get("KALO_TOKEN"))
     logs = []
     if os.path.exists(LOG_FILE):
         with open(LOG_FILE, encoding="utf-8") as f:

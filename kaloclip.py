@@ -35,9 +35,32 @@ class KaloclipBot:
         with open(self.cookies_file) as f:
             return json.load(f)
 
+    def load_session(self):
+        """โหลด Kalodata session จาก env vars"""
+        return {
+            "_l_KPLiPs": os.environ.get("KALO_TOKEN", ""),
+            "device_uuid": os.environ.get("KALO_DEVICE", ""),
+            "userName": os.environ.get("KALO_USER", ""),
+            "region": "TH",
+            "phonePrefix": "66",
+            "phoneRegion": "TH",
+        }
+
+    async def inject_session(self, page, session):
+        """Inject localStorage session เข้า browser"""
+        await page.goto("https://www.kalodata.com", wait_until="domcontentloaded")
+        await page.wait_for_timeout(1000)
+        js = ";\n".join([f"localStorage.setItem({json.dumps(k)}, {json.dumps(v)})" for k, v in session.items() if v])
+        await page.evaluate(js)
+        self.log("✅ Inject session สำเร็จ")
+
     async def run(self):
         state = self.load_state()
-        cookies = self.load_cookies()
+        session = self.load_session()
+
+        if not session.get("_l_KPLiPs"):
+            self.log("❌ ไม่พบ KALO_TOKEN — กรุณาตั้งค่า env vars")
+            return
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(
@@ -53,8 +76,10 @@ class KaloclipBot:
                 viewport={"width": 1366, "height": 768},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
             )
-            await context.add_cookies(cookies)
             page = await context.new_page()
+
+            # Inject session ก่อน
+            await self.inject_session(page, session)
 
             try:
                 # ดึง Top 7 ใหม่ถ้าหมดรอบ
