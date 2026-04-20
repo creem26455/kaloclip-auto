@@ -421,6 +421,57 @@ class KaloclipBot:
             if not clicked:
                 self.log("  ❌ ไม่พบปุ่ม Generate เลย")
 
+        # ===== Dismiss notification popup =====
+        # หลังกด สร้าง — Kaloclip แสดง popup "ไม่ต้องรอ! เปิดการแจ้งเตือน..."
+        # ต้องกดปิดก่อนถึงจะ render ต่อได้
+        if clicked:
+            await page.wait_for_timeout(2000)
+            self.log("  🔔 ตรวจ notification popup...")
+            dismissed = False
+            for dismiss_text in ["ไม่เป็นไร", "ไม่ต้องการ", "ข้าม", "Skip", "No thanks", "No"]:
+                try:
+                    el = page.locator(f'button:has-text("{dismiss_text}")').first
+                    if await el.is_visible(timeout=2000):
+                        await el.click()
+                        self.log(f"  ✅ ปิด popup: '{dismiss_text}'")
+                        dismissed = True
+                        await page.wait_for_timeout(1000)
+                        break
+                except Exception:
+                    continue
+            if not dismissed:
+                # ลอง Ant Design modal cancel button
+                for sel in [
+                    '.ant-modal-footer button:first-child',
+                    '.ant-modal-close',
+                    '[class*="modal"] button:first-child',
+                    'button[class*="cancel"]',
+                ]:
+                    try:
+                        el = page.locator(sel).first
+                        if await el.is_visible(timeout=1000):
+                            await el.click()
+                            self.log(f"  ✅ ปิด modal: {sel}")
+                            dismissed = True
+                            await page.wait_for_timeout(1000)
+                            break
+                    except Exception:
+                        continue
+            if not dismissed:
+                self.log("  ℹ️ ไม่พบ notification popup (หรือปิดแล้ว)")
+            # Screenshot หลังปิด popup
+            try:
+                ss4_path = os.path.join(self.output_dir, "debug_after_dismiss.png")
+                await page.screenshot(path=ss4_path, full_page=True)
+                btns_after = await page.evaluate(
+                    """Array.from(document.querySelectorAll('button'))
+                       .filter(b => b.offsetParent !== null)
+                       .map(b => b.textContent.trim()).filter(t => t).join(' | ')"""
+                )
+                self.log(f"  📸 After-dismiss | Btns: {btns_after[:300]}")
+            except Exception:
+                pass
+
     async def _set_antd_dropdown(self, page, trigger_contains, options, label=""):
         """เปิด Ant Design dropdown แล้วเลือก option
         ใช้ Playwright ElementHandle.click() เพื่อ trigger React synthetic events ถูกต้อง
