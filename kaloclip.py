@@ -372,21 +372,8 @@ class KaloclipBot:
         except Exception:
             self.log("  ⚠️ Script รอนาน — ดำเนินการต่อ")
 
-        # ตั้ง duration = 20S (bottom bar Step 3)
-        await self._set_antd_dropdown(page, "8 S", ["20 S", "20S", "20"], "duration")
-
-        # ===== ตรวจสอบว่า duration เปลี่ยนเป็น 20S หรือยัง =====
-        # ถ้ายัง 8S อยู่ — ห้าม สร้าง คลิป (ตามคำสั่ง BossMhee)
-        duration_ok = False
-        try:
-            body_check = await page.evaluate("document.body.innerText")
-            if "20 S" in body_check or "20S" in body_check:
-                duration_ok = True
-                self.log("  ✅ Duration = 20S ✓")
-            else:
-                self.log("  ❌ Duration ยังเป็น 8S — หยุดไม่สร้างคลิป!")
-        except Exception as e:
-            self.log(f"  ⚠️ ตรวจ duration: {e}")
+        # ตั้ง duration = 20S (bottom bar Step 3) — ใช้ method พิเศษ
+        duration_ok = await self._set_duration_step3(page)
 
         # Screenshot Step 3 หลังตั้งค่า
         try:
@@ -488,6 +475,170 @@ class KaloclipBot:
                 self.log(f"  📸 After-dismiss | Btns: {btns_after[:300]}")
             except Exception:
                 pass
+
+    async def _set_duration_step3(self, page):
+        """ตั้ง duration = 20S ใน Step 3 bottom bar
+        Duration dropdown ไม่ใช่ standard Ant Design Select — ต้องใช้วิธีพิเศษ
+        """
+        self.log("  ⏱ ตั้ง duration = 20S...")
+
+        # --- Dump element structure ก่อน ---
+        duration_info = await page.evaluate("""
+            () => {
+                const result = [];
+                for (const el of document.querySelectorAll('*')) {
+                    const t = el.childNodes.length === 1 && el.firstChild?.nodeType === 3
+                        ? el.textContent.trim()
+                        : el.textContent.trim();
+                    if (/^\\d{1,2}\\s*[Ss]$/.test(t) && el.offsetParent !== null) {
+                        const rect = el.getBoundingClientRect();
+                        result.push({
+                            tag: el.tagName,
+                            text: t,
+                            cls: el.className.substring(0, 80),
+                            parent_cls: (el.parentElement?.className || '').substring(0, 60),
+                            x: Math.round(rect.x), y: Math.round(rect.y),
+                            w: Math.round(rect.width), h: Math.round(rect.height)
+                        });
+                        if (result.length >= 10) break;
+                    }
+                }
+                return result;
+            }
+        """)
+        self.log(f"  Duration elements: {duration_info}")
+
+        # --- Approach 1: คลิก "20 S" ตรงๆ (radio button / button group) ---
+        for target_text in ["20 S", "20S"]:
+            try:
+                els = await page.query_selector_all(f'text="{target_text}"')
+                for el in els:
+                    if await el.is_visible():
+                        bbox = await el.bounding_box()
+                        if bbox:
+                            cx = bbox['x'] + bbox['width'] / 2
+                            cy = bbox['y'] + bbox['height'] / 2
+                            await page.mouse.click(cx, cy)
+                            self.log(f"  🖱 mouse.click on '{target_text}' at ({cx:.0f},{cy:.0f})")
+                            await page.wait_for_timeout(500)
+                            body = await page.evaluate("document.body.innerText")
+                            # ตรวจว่าเปลี่ยนสำเร็จ
+                            if "20 S" in body and "8 S" not in body:
+                                self.log("  ✅ Duration = 20S ✓ (approach 1)")
+                                return True
+            except Exception as e:
+                self.log(f"  ⚠️ approach 1 '{target_text}': {e}")
+
+        # --- Approach 2: JS dispatchEvent mousedown บน element ที่มี "8 S" ---
+        js_result = await page.evaluate("""
+            () => {
+                // หา element ที่มีเฉพาะ "8 S" แล้วลอง trigger
+                const all = document.querySelectorAll('*');
+                for (const el of all) {
+                    const t = el.textContent.trim();
+                    if ((t === '8 S' || t === '8S') && el.offsetParent !== null) {
+                        // Try parent (dropdown trigger wrapper)
+                        const trigger = el.closest('.ant-select') || el.parentElement || el;
+                        const inner = trigger.querySelector('.ant-select-selector') || trigger;
+                        inner.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true}));
+                        inner.dispatchEvent(new MouseEvent('mouseup',   {bubbles:true, cancelable:true}));
+                        inner.dispatchEvent(new MouseEvent('click',     {bubbles:true, cancelable:true}));
+                        return {
+                            triggered: inner.tagName + ' ' + inner.className.substring(0,50),
+                            parent: trigger.className.substring(0,50)
+                        };
+                    }
+                }
+                return null;
+            }
+        """)
+        self.log(f"  JS dispatch: {js_result}")
+        await page.wait_for_timeout(1200)
+
+        # ดู options ที่ปรากฏ
+        options_visible = await page.evaluate("""
+            () => Array.from(document.querySelectorAll(
+                '.ant-select-item, .ant-select-item-option, [role="option"], ' +
+                '.ant-select-dropdown li, .ant-dropdown li'
+            )).filter(e => e.offsetParent !== null)
+              .map(e => e.textContent.trim()).join(' | ')
+        """)
+        self.log(f"  Options after dispatch: {options_visible[:200]}")
+
+        if options_visible:
+            for opt_text in ["20 S", "20S", "20"]:
+                try:
+                    opt_el = page.locator(
+                        f'.ant-select-item:has-text("{opt_text}"), '
+                        f'[role="option"]:has-text("{opt_text}")'
+                    ).first
+                    if await opt_el.is_visible(timeout=500):
+                        await opt_el.click()
+                        self.log(f"  ✅ selected '{opt_text}' via dispatch")
+                        await page.wait_for_timeout(500)
+                        body = await page.evaluate("document.body.innerText")
+                        if "20 S" in body:
+                            return True
+                except Exception:
+                    continue
+
+        # --- Approach 3: mouse.click บน coordinate ของ "8 S" element ---
+        try:
+            bbox_info = await page.evaluate("""
+                () => {
+                    for (const el of document.querySelectorAll('*')) {
+                        const t = el.textContent.trim();
+                        if ((t === '8 S' || t === '8S') && el.offsetParent !== null) {
+                            const rect = el.getBoundingClientRect();
+                            return {x: rect.x, y: rect.y, w: rect.width, h: rect.height,
+                                    cls: el.className.substring(0,80)};
+                        }
+                    }
+                    return null;
+                }
+            """)
+            if bbox_info and bbox_info.get('w', 0) > 0:
+                cx = bbox_info['x'] + bbox_info['w'] / 2
+                cy = bbox_info['y'] + bbox_info['h'] / 2
+                self.log(f"  🖱 approach 3: mouse.click '8 S' at ({cx:.0f},{cy:.0f}) cls={bbox_info['cls'][:40]}")
+                await page.mouse.move(cx, cy)
+                await page.mouse.down()
+                await page.wait_for_timeout(150)
+                await page.mouse.up()
+                await page.wait_for_timeout(1200)
+
+                # ตรวจ options
+                opts2 = await page.evaluate("""
+                    () => Array.from(document.querySelectorAll(
+                        '.ant-select-item, [role="option"], .ant-select-dropdown *'
+                    )).filter(e => e.offsetParent !== null)
+                      .map(e => e.textContent.trim()).filter(t=>t).join(' | ')
+                """)
+                self.log(f"  Options after approach 3: {opts2[:200]}")
+
+                for opt_text in ["20 S", "20S"]:
+                    try:
+                        opt_el = page.get_by_text(opt_text, exact=True).first
+                        if await opt_el.is_visible(timeout=800):
+                            await opt_el.click()
+                            self.log(f"  ✅ selected '{opt_text}' via approach 3")
+                            await page.wait_for_timeout(500)
+                            body = await page.evaluate("document.body.innerText")
+                            if "20 S" in body:
+                                return True
+                    except Exception:
+                        continue
+        except Exception as e:
+            self.log(f"  ⚠️ approach 3: {e}")
+
+        # --- Final check ---
+        body_final = await page.evaluate("document.body.innerText")
+        if "20 S" in body_final:
+            self.log("  ✅ Duration = 20S ✓ (already set)")
+            return True
+
+        self.log("  ❌ Duration ยังเป็น 8S — หยุดไม่สร้างคลิป!")
+        return False
 
     async def _set_antd_dropdown(self, page, trigger_contains, options, label=""):
         """เปิด Ant Design dropdown แล้วเลือก option
