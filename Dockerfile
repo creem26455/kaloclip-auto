@@ -15,4 +15,4 @@ RUN mkdir -p /data/downloads
 
 EXPOSE 8080
 
-CMD gunicorn app:app --bind 0.0.0.0:${PORT:-8080} --timeout 600 --workers 1
+CMD ["sh", "-c", "gunicorn app:app --bind 0.0.0.0:${PORT:-8080} --timeout 600 --workers 1"]
