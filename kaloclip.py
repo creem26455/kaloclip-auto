@@ -81,6 +81,12 @@ class KaloclipBot:
             await self.inject_session(context, session)
 
             try:
+                # แวะ kalodata.com ก่อน เพื่อให้ session ทำงานและ SSO กับ kalowave.com
+                self.log("🌐 เปิด Kalodata เพื่อ auth...")
+                await page.goto("https://www.kalodata.com", wait_until="domcontentloaded", timeout=30000)
+                await page.wait_for_timeout(3000)
+                self.log(f"📄 Title: {await page.title()}")
+
                 # ดึง Top 7 ใหม่ถ้าหมดรอบ
                 cycle_complete = state.get("index", 0) >= TOP_N
                 if not state.get("products") or cycle_complete:
@@ -206,17 +212,33 @@ class KaloclipBot:
     async def _fill_form(self, page):
         self.log("📝 กรอกฟอร์ม...")
         await page.wait_for_load_state("domcontentloaded")
-        await page.wait_for_timeout(4000)
+        await page.wait_for_timeout(6000)
 
-        # Step 1 — เลือกจุดขายทั้งหมด
+        # Screenshot debug
+        try:
+            ss_path = os.path.join(self.output_dir, "debug_form.png")
+            await page.screenshot(path=ss_path, full_page=True)
+            self.log(f"📸 Screenshot: {ss_path} | URL: {page.url}")
+        except Exception as e:
+            self.log(f"⚠️ screenshot error: {e}")
+
+        # Step 1 — รอให้ checkbox โหลด (SPA อาจช้า)
+        try:
+            await page.wait_for_selector('input[type="checkbox"]', timeout=15000)
+        except Exception:
+            self.log("⚠️ ไม่พบ checkbox หลังรอ 15s")
+
         checkboxes = await page.query_selector_all('input[type="checkbox"]')
         checked_count = 0
         for cb in checkboxes:
-            if not await cb.is_checked():
-                await cb.click()
-                await page.wait_for_timeout(150)
-                checked_count += 1
-        self.log(f"  เลือก {len(checkboxes)} จุดขาย")
+            try:
+                if not await cb.is_checked():
+                    await cb.click()
+                    await page.wait_for_timeout(150)
+                    checked_count += 1
+            except Exception:
+                pass
+        self.log(f"  เลือก {len(checkboxes)} จุดขาย (checked {checked_count})")
 
         # กดถัดไป
         await self._click_next(page)
@@ -236,11 +258,15 @@ class KaloclipBot:
 
     async def _click_next(self, page):
         for text in ["ถัดไป", "Next", "ต่อไป"]:
-            btn = await page.query_selector(f'text="{text}"')
-            if btn:
-                await btn.click()
-                self.log(f"  → กด '{text}'")
-                return
+            try:
+                btn = await page.query_selector(f'text="{text}"')
+                if btn:
+                    await btn.click(timeout=5000)
+                    self.log(f"  → กด '{text}'")
+                    return
+            except Exception as e:
+                self.log(f"  ⚠️ กด '{text}' ไม่ได้: {e}")
+        self.log("  ⚠️ ไม่พบปุ่มถัดไป")
 
     async def _download_video(self, page, product):
         self.log("⏳ รอ render... (1-3 นาที)")
