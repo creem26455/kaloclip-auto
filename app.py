@@ -129,11 +129,12 @@ def get_logs():
 
 @app.route("/screenshot")
 def debug_screenshot():
-    from flask import send_file
-    path = os.path.join(OUTPUT_DIR, "debug_form.png")
+    from flask import send_file, request as req
+    name = req.args.get("name", "debug_form")
+    path = os.path.join(OUTPUT_DIR, f"{name}.png")
     if os.path.exists(path):
         return send_file(path, mimetype="image/png")
-    return "No screenshot yet", 404
+    return f"No screenshot: {name}", 404
 
 
 @app.route("/status")

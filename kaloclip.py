@@ -326,6 +326,40 @@ class KaloclipBot:
         except Exception:
             self.log("  ⚠️ ไม่พบ checkbox บน Step 2 — ดำเนินการต่อ")
 
+        # Debug: dump Step 2 DOM structure เพื่อหา dropdown/duration selectors ที่ถูกต้อง
+        try:
+            dom_info = await page.evaluate("""
+                () => {
+                    const info = {};
+                    // selects
+                    info.selects = Array.from(document.querySelectorAll('select')).map(s => ({
+                        id: s.id, name: s.name,
+                        options: Array.from(s.options).map(o => o.text + ':' + o.value)
+                    }));
+                    // visible custom dropdowns
+                    info.dropdowns = Array.from(document.querySelectorAll(
+                        '[class*="select"],[class*="dropdown"],[class*="picker"]'
+                    )).filter(e => e.offsetParent !== null).map(e =>
+                        e.className.substring(0,40) + '||' + e.textContent.trim().substring(0,30)
+                    ).slice(0,10);
+                    // bottom bar
+                    const bar = document.querySelector(
+                        '[class*="footer"],[class*="toolbar"],[class*="bottom-bar"],[class*="bottomBar"]'
+                    );
+                    info.bottom = bar ? bar.textContent.trim().substring(0, 80) : 'none';
+                    // all visible buttons
+                    info.buttons = Array.from(document.querySelectorAll('button'))
+                        .filter(b => b.offsetParent !== null)
+                        .map(b => b.textContent.trim().substring(0,25)).slice(0,20);
+                    // body text
+                    info.body = document.body.innerText.substring(0, 400);
+                    return JSON.stringify(info, null, 0);
+                }
+            """)
+            self.log(f"  [DOM Step2] {dom_info[:800]}")
+        except Exception as e:
+            self.log(f"  [DOM Step2 error] {e}")
+
         # เลือกจุดขายทั้งหมด
         checkboxes = await page.query_selector_all('input[type="checkbox"]')
         checked_count = 0
@@ -362,6 +396,32 @@ class KaloclipBot:
         await page.wait_for_timeout(5000)
 
         # ===== STEP 3 (ตรวจสอบสคริปต์) =====
+        # รอให้ Step 3 โหลดสคริปต์
+        self.log("  [Step 3] รอ script โหลด...")
+        await page.wait_for_timeout(8000)
+
+        # Debug: dump Step 3 buttons
+        try:
+            step3_btns = await page.evaluate("""
+                () => Array.from(document.querySelectorAll('button'))
+                    .filter(b => b.offsetParent !== null)
+                    .map(b => b.textContent.trim().substring(0, 30))
+                    .join(' | ')
+            """)
+            self.log(f"  [Step 3 buttons] {step3_btns}")
+            step3_body = await page.evaluate("document.body.innerText.substring(0, 300)")
+            self.log(f"  [Step 3 body] {step3_body[:200]}")
+        except Exception:
+            pass
+
+        # Screenshot Step 3
+        try:
+            ss3_path = os.path.join(self.output_dir, "debug_step3.png")
+            await page.screenshot(path=ss3_path, full_page=True)
+            self.log("  📸 Screenshot Step 3 saved")
+        except Exception:
+            pass
+
         # กด สร้างวิดีโอ / Generate
         self.log("  [Step 3] กด สร้างวิดีโอ...")
         for btn_text in ["สร้างวิดีโอ", "Generate Video", "Generate", "ยืนยัน", "เริ่มสร้าง"]:
