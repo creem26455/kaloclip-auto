@@ -411,7 +411,7 @@ class KaloclipBot:
     async def _set_antd_dropdown(self, page, trigger_contains, options, label=""):
         """เปิด Ant Design dropdown (class=ant-select) แล้วเลือก option"""
         try:
-            # คลิก trigger เพื่อเปิด dropdown
+            # 1. คลิก trigger เพื่อเปิด dropdown
             opened = await page.evaluate(f"""
                 () => {{
                     const trig = {json.dumps(trigger_contains)};
@@ -429,15 +429,34 @@ class KaloclipBot:
                 self.log(f"  ⚠️ {label}: ไม่พบ dropdown '{trigger_contains}'")
                 return
             self.log(f"  📍 {label}: {opened}")
-            await page.wait_for_timeout(800)
 
-            # เลือก option จาก ant-select-item ที่เปิดแล้ว
+            # 2. รอ dropdown portal ปรากฏใน DOM (Ant Design render ผ่าน portal ใน body)
+            try:
+                await page.wait_for_selector(
+                    '.ant-select-dropdown:not(.ant-select-dropdown-hidden)',
+                    timeout=5000
+                )
+                self.log(f"  ✅ {label}: dropdown portal open")
+            except Exception:
+                self.log(f"  ⚠️ {label}: ไม่พบ portal — รอ 1.5s")
+                await page.wait_for_timeout(1500)
+
+            # 3. Log options ที่มีอยู่ใน dropdown (เพื่อ debug)
+            all_items = await page.evaluate("""
+                () => Array.from(document.querySelectorAll(
+                    '.ant-select-item, .ant-select-item-option, li[role="option"], [class*="select-item"]'
+                )).map(el => el.textContent.trim().substring(0, 20)).join(' | ')
+            """)
+            self.log(f"  📋 {label} options: {all_items[:100]}")
+
+            # 4. เลือก option
             for opt in options:
                 found = await page.evaluate(f"""
                     () => {{
                         const text = {json.dumps(opt)};
                         const items = document.querySelectorAll(
-                            '.ant-select-item, .ant-select-item-option, li[role="option"]'
+                            '.ant-select-item, .ant-select-item-option, ' +
+                            'li[role="option"], [class*="select-item"], [class*="option-item"]'
                         );
                         for (const item of items) {{
                             const t = item.textContent.trim();
