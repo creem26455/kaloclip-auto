@@ -326,40 +326,6 @@ class KaloclipBot:
         except Exception:
             self.log("  ⚠️ ไม่พบ checkbox บน Step 2 — ดำเนินการต่อ")
 
-        # Debug: dump Step 2 DOM structure เพื่อหา dropdown/duration selectors ที่ถูกต้อง
-        try:
-            dom_info = await page.evaluate("""
-                () => {
-                    const info = {};
-                    // selects
-                    info.selects = Array.from(document.querySelectorAll('select')).map(s => ({
-                        id: s.id, name: s.name,
-                        options: Array.from(s.options).map(o => o.text + ':' + o.value)
-                    }));
-                    // visible custom dropdowns
-                    info.dropdowns = Array.from(document.querySelectorAll(
-                        '[class*="select"],[class*="dropdown"],[class*="picker"]'
-                    )).filter(e => e.offsetParent !== null).map(e =>
-                        e.className.substring(0,40) + '||' + e.textContent.trim().substring(0,30)
-                    ).slice(0,10);
-                    // bottom bar
-                    const bar = document.querySelector(
-                        '[class*="footer"],[class*="toolbar"],[class*="bottom-bar"],[class*="bottomBar"]'
-                    );
-                    info.bottom = bar ? bar.textContent.trim().substring(0, 80) : 'none';
-                    // all visible buttons
-                    info.buttons = Array.from(document.querySelectorAll('button'))
-                        .filter(b => b.offsetParent !== null)
-                        .map(b => b.textContent.trim().substring(0,25)).slice(0,20);
-                    // body text
-                    info.body = document.body.innerText.substring(0, 400);
-                    return JSON.stringify(info, null, 0);
-                }
-            """)
-            self.log(f"  [DOM Step2] {dom_info[:800]}")
-        except Exception as e:
-            self.log(f"  [DOM Step2 error] {e}")
-
         # เลือกจุดขายทั้งหมด
         checkboxes = await page.query_selector_all('input[type="checkbox"]')
         checked_count = 0
@@ -373,14 +339,11 @@ class KaloclipBot:
                 pass
         self.log(f"  เลือก {len(checkboxes)} จุดขาย (checked {checked_count})")
 
-        # ตั้งกลุ่มตลาด = ไทย
-        await self._select_dropdown(page, ["ไทย", "Thailand", "TH"], "กลุ่มตลาดเป้าหมาย")
+        # ตั้งกลุ่มตลาด = ไทย (Ant Design dropdown — placeholder: "เลือกภูมิภาค...")
+        await self._set_antd_dropdown(page, "เลือกภูมิภาค", ["ไทย", "Thailand", "TH"], "กลุ่มตลาด")
 
-        # ตั้งภาษา = ภาษาไทย
-        await self._select_dropdown(page, ["ภาษาไทย", "Thai", "th"], "ภาษา")
-
-        # ตั้ง video duration = 20S (bottom bar)
-        await self._set_video_duration(page, "20")
+        # ตั้งภาษา = ภาษาไทย (Ant Design dropdown — current: "ภาษาอังกฤษ")
+        await self._set_antd_dropdown(page, "ภาษาอังกฤษ", ["ภาษาไทย", "Thai"], "ภาษา")
 
         # Screenshot หลังกรอก Step 2
         try:
@@ -396,50 +359,108 @@ class KaloclipBot:
         await page.wait_for_timeout(5000)
 
         # ===== STEP 3 (ตรวจสอบสคริปต์) =====
-        # รอให้ Step 3 โหลดสคริปต์
-        self.log("  [Step 3] รอ script โหลด...")
-        await page.wait_for_timeout(8000)
-
-        # Debug: dump Step 3 buttons
+        # รอ script generate เสร็จ — Kaloclip ใช้เวลา ~2-3 นาที
+        self.log("  [Step 3] รอ script generate เสร็จ (สูงสุด 5 นาที)...")
         try:
-            step3_btns = await page.evaluate("""
-                () => Array.from(document.querySelectorAll('button'))
-                    .filter(b => b.offsetParent !== null)
-                    .map(b => b.textContent.trim().substring(0, 30))
-                    .join(' | ')
-            """)
-            self.log(f"  [Step 3 buttons] {step3_btns}")
-            step3_body = await page.evaluate("document.body.innerText.substring(0, 300)")
-            self.log(f"  [Step 3 body] {step3_body[:200]}")
+            await page.wait_for_function(
+                """() => Array.from(document.querySelectorAll('button'))
+                    .some(b => b.textContent.trim().includes('สร้างวิดีโอ') && !b.disabled)""",
+                timeout=300_000  # 5 นาที
+            )
+            self.log("  ✅ Script โหลดเสร็จ — พบปุ่ม สร้างวิดีโอ")
         except Exception:
-            pass
+            self.log("  ⚠️ Script รอนาน — ดำเนินการต่อ")
 
-        # Screenshot Step 3
+        # ตั้ง duration = 20S ใน bottom bar (Ant Design dropdown: "8 S" → "20 S")
+        await self._set_antd_dropdown(page, "8 S", ["20 S", "20S"], "duration")
+
+        # ตั้ง quality = 720P ใน bottom bar ("1080P" → "720P")
+        await self._set_antd_dropdown(page, "1080P", ["720P", "720p"], "quality")
+
+        # Screenshot Step 3 หลังตั้งค่า
         try:
             ss3_path = os.path.join(self.output_dir, "debug_step3.png")
             await page.screenshot(path=ss3_path, full_page=True)
-            self.log("  📸 Screenshot Step 3 saved")
+            btns = await page.evaluate(
+                """Array.from(document.querySelectorAll('button'))
+                   .filter(b => b.offsetParent).map(b => b.textContent.trim()).join(' | ')"""
+            )
+            self.log(f"  📸 Step 3 saved | buttons: {btns}")
         except Exception:
             pass
 
-        # กด สร้างวิดีโอ / Generate
+        # กด สร้างวิดีโอ
         self.log("  [Step 3] กด สร้างวิดีโอ...")
+        clicked = False
         for btn_text in ["สร้างวิดีโอ", "Generate Video", "Generate", "ยืนยัน", "เริ่มสร้าง"]:
-            btn = await page.query_selector(f'text="{btn_text}"')
-            if btn:
-                try:
+            try:
+                btn = await page.query_selector(f'button:has-text("{btn_text}")')
+                if not btn:
+                    btn = await page.query_selector(f'text="{btn_text}"')
+                if btn:
                     await btn.click(timeout=5000)
                     self.log(f"  ✅ กด '{btn_text}'")
+                    clicked = True
                     await page.wait_for_timeout(2000)
                     break
-                except Exception as e:
-                    self.log(f"  ⚠️ กด '{btn_text}' ไม่ได้: {e}")
-        else:
-            self.log("  ⚠️ ไม่พบปุ่ม Generate — ลอง ถัดไป สุดท้าย")
-            await self._click_next(page)
+            except Exception as e:
+                self.log(f"  ⚠️ กด '{btn_text}': {e}")
+        if not clicked:
+            self.log("  ⚠️ ไม่พบปุ่ม Generate")
+
+    async def _set_antd_dropdown(self, page, trigger_contains, options, label=""):
+        """เปิด Ant Design dropdown (class=ant-select) แล้วเลือก option"""
+        try:
+            # คลิก trigger เพื่อเปิด dropdown
+            opened = await page.evaluate(f"""
+                () => {{
+                    const trig = {json.dumps(trigger_contains)};
+                    const selects = document.querySelectorAll('.ant-select');
+                    for (const sel of selects) {{
+                        if (sel.textContent.trim().includes(trig) && sel.offsetParent !== null) {{
+                            sel.click();
+                            return 'opened:' + sel.textContent.trim().substring(0, 30);
+                        }}
+                    }}
+                    return null;
+                }}
+            """)
+            if not opened:
+                self.log(f"  ⚠️ {label}: ไม่พบ dropdown '{trigger_contains}'")
+                return
+            self.log(f"  📍 {label}: {opened}")
+            await page.wait_for_timeout(800)
+
+            # เลือก option จาก ant-select-item ที่เปิดแล้ว
+            for opt in options:
+                found = await page.evaluate(f"""
+                    () => {{
+                        const text = {json.dumps(opt)};
+                        const items = document.querySelectorAll(
+                            '.ant-select-item, .ant-select-item-option, li[role="option"]'
+                        );
+                        for (const item of items) {{
+                            const t = item.textContent.trim();
+                            if (t === text || t.includes(text)) {{
+                                item.click();
+                                return 'selected:' + t.substring(0, 25);
+                            }}
+                        }}
+                        return null;
+                    }}
+                """)
+                if found:
+                    self.log(f"  ✅ {label}: {found}")
+                    await page.wait_for_timeout(500)
+                    return
+
+            self.log(f"  ⚠️ {label}: ไม่พบ option {options}")
+            await page.keyboard.press("Escape")
+        except Exception as e:
+            self.log(f"  ⚠️ {label} error: {e}")
 
     async def _set_video_duration(self, page, seconds="20"):
-        """ตั้ง duration ที่ bottom bar เป็น 20S"""
+        """(deprecated) ตั้ง duration ที่ bottom bar เป็น 20S"""
         self.log(f"  ⏱ ตั้ง duration = {seconds}S...")
         try:
             # JS approach: หา element ที่ match pattern \d+S แล้วคลิกเพื่อเปิด dropdown
