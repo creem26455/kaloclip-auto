@@ -495,9 +495,20 @@ class KaloclipBot:
                 self.log(f"  ⚠️ {label}: ไม่พบ dropdown '{trigger_contains}'")
                 return
 
-            # 2. คลิกด้วย Playwright (trigger React synthetic events)
-            await target_el.click()
-            await page.wait_for_timeout(1200)
+            # 2. scroll into view ก่อน แล้วคลิก .ant-select-selector (inner div)
+            # กรณี bottom bar (duration/quality) — click outer wrapper ไม่ trigger dropdown
+            # ต้องคลิกที่ inner .ant-select-selector แทน
+            await target_el.scroll_into_view_if_needed()
+            await page.wait_for_timeout(300)
+
+            inner_selector = await target_el.query_selector('.ant-select-selector')
+            if inner_selector:
+                await inner_selector.click()
+                self.log(f"  🖱 {label}: click inner selector")
+            else:
+                await target_el.click()
+                self.log(f"  🖱 {label}: click outer wrapper")
+            await page.wait_for_timeout(1500)
 
             # 3. Dump DOM หลัง click เพื่อดูว่า options ปรากฏที่ไหน
             dom_after = await page.evaluate("""
@@ -545,7 +556,14 @@ class KaloclipBot:
                     except Exception:
                         continue
 
-            self.log(f"  ⚠️ {label}: ไม่พบ option {options}")
+            # log ว่า dropdown มี options อะไรบ้าง (เพื่อ debug)
+            available = await page.evaluate("""
+                () => Array.from(document.querySelectorAll(
+                    '.ant-select-item, .ant-select-item-option, [role="option"]'
+                )).filter(e => e.offsetParent !== null)
+                  .map(e => e.textContent.trim()).join(' | ')
+            """)
+            self.log(f"  ⚠️ {label}: ไม่พบ option {options} | available: {available[:200]}")
             await page.keyboard.press("Escape")
         except Exception as e:
             self.log(f"  ⚠️ {label} error: {e}")
