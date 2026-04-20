@@ -372,8 +372,21 @@ class KaloclipBot:
         except Exception:
             self.log("  ⚠️ Script รอนาน — ดำเนินการต่อ")
 
-        # ตั้ง duration = 20S (ลองทั้ง Step 3 bottom bar)
+        # ตั้ง duration = 20S (bottom bar Step 3)
         await self._set_antd_dropdown(page, "8 S", ["20 S", "20S", "20"], "duration")
+
+        # ===== ตรวจสอบว่า duration เปลี่ยนเป็น 20S หรือยัง =====
+        # ถ้ายัง 8S อยู่ — ห้าม สร้าง คลิป (ตามคำสั่ง BossMhee)
+        duration_ok = False
+        try:
+            body_check = await page.evaluate("document.body.innerText")
+            if "20 S" in body_check or "20S" in body_check:
+                duration_ok = True
+                self.log("  ✅ Duration = 20S ✓")
+            else:
+                self.log("  ❌ Duration ยังเป็น 8S — หยุดไม่สร้างคลิป!")
+        except Exception as e:
+            self.log(f"  ⚠️ ตรวจ duration: {e}")
 
         # Screenshot Step 3 หลังตั้งค่า
         try:
@@ -386,6 +399,10 @@ class KaloclipBot:
             self.log(f"  📸 Step 3 saved | buttons: {btns}")
         except Exception:
             pass
+
+        # ถ้า duration ไม่ได้ตั้งค่าตามที่กำหนด → abort ไม่สร้างคลิป
+        if not duration_ok:
+            raise Exception("❌ ตั้งค่า duration ไม่สำเร็จ (ยังเป็น 8S) — ยกเลิกการสร้างคลิป")
 
         # กด สร้าง (ปุ่มจริงคือ "สร้าง +10" หรือ "สร้าง +XX")
         self.log("  [Step 3] กด สร้าง...")
