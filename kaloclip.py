@@ -301,24 +301,32 @@ class KaloclipBot:
             await page.screenshot(path=ss_path, full_page=True)
             title = await page.title()
             self.log(f"📸 Screenshot saved | URL: {page.url} | Title: {title}")
-            # ดูว่า login หรือเปล่า
-            login_el = await page.query_selector('text="Login"')
-            login_th = await page.query_selector('text="เข้าสู่ระบบ"')
-            sign_in = await page.query_selector('text="Sign in"')
             all_text = await page.evaluate("document.body.innerText")
-            self.log(f"  Login button: {bool(login_el or login_th or sign_in)}")
             self.log(f"  Body snippet: {all_text[:300]}")
         except Exception as e:
             self.log(f"⚠️ screenshot error: {e}")
 
-        # รอให้จุดขาย (checkboxes) โหลด — สัญญาณว่า auth ผ่านและข้อมูลสินค้าโหลดแล้ว
+        # ===== STEP 1 (ตั้งค่าสินค้า) =====
+        # Step 1 แสดงรูปสินค้า / drag-drop — ไม่มี checkbox
+        # รอให้ product โหลดแล้วกด ถัดไป → Step 2
+        self.log("  [Step 1] รอ product โหลด...")
+        await page.wait_for_timeout(3000)
+
+        # กด ถัดไป Step 1 → Step 2
+        self.log("  [Step 1 → Step 2] กด ถัดไป...")
+        await self._click_next(page)
+        await page.wait_for_timeout(5000)
+
+        # ===== STEP 2 (ตั้งค่าวิดีโอ) =====
+        # รอ checkbox จุดขายโหลด
+        self.log("  [Step 2] รอ checkbox จุดขาย...")
         try:
             await page.wait_for_selector('input[type="checkbox"]', timeout=20000)
-            self.log("  ✅ ฟอร์มโหลดแล้ว (พบ checkbox)")
+            self.log("  ✅ พบ checkbox บน Step 2")
         except Exception:
-            self.log("⚠️ ไม่พบ checkbox หลังรอ 20s — อาจยังไม่ได้ auth")
+            self.log("  ⚠️ ไม่พบ checkbox บน Step 2 — ดำเนินการต่อ")
 
-        # Step 1: เลือกจุดขายทั้งหมด
+        # เลือกจุดขายทั้งหมด
         checkboxes = await page.query_selector_all('input[type="checkbox"]')
         checked_count = 0
         for cb in checkboxes:
@@ -331,55 +339,111 @@ class KaloclipBot:
                 pass
         self.log(f"  เลือก {len(checkboxes)} จุดขาย (checked {checked_count})")
 
-        # Step 1: ตั้งกลุ่มตลาด = ไทย
+        # ตั้งกลุ่มตลาด = ไทย
         await self._select_dropdown(page, ["ไทย", "Thailand", "TH"], "กลุ่มตลาดเป้าหมาย")
 
-        # Step 1: ตั้งภาษา = ภาษาไทย
+        # ตั้งภาษา = ภาษาไทย
         await self._select_dropdown(page, ["ภาษาไทย", "Thai", "th"], "ภาษา")
 
-        # ตั้ง video duration = 20S (คลิก duration dropdown ที่ bottom bar)
+        # ตั้ง video duration = 20S (bottom bar)
         await self._set_video_duration(page, "20")
 
-        # กดถัดไป (Step 1 → Step 2 หรือ Step 2 → Step 3)
-        await self._click_next(page)
-        await page.wait_for_timeout(3000)
+        # Screenshot หลังกรอก Step 2
+        try:
+            ss2_path = os.path.join(self.output_dir, "debug_step2.png")
+            await page.screenshot(path=ss2_path, full_page=True)
+            self.log("  📸 Screenshot Step 2 saved")
+        except Exception:
+            pass
 
-        # Step 2/3 — กดถัดไปอีกครั้ง ถ้ายังมี
+        # กด ถัดไป Step 2 → Step 3
+        self.log("  [Step 2 → Step 3] กด ถัดไป...")
         await self._click_next(page)
-        await page.wait_for_timeout(3000)
+        await page.wait_for_timeout(5000)
 
-        # Step 3 (ตรวจสอบสคริปต์) — กด Generate/สร้างวิดีโอ
-        for btn_text in ["สร้างวิดีโอ", "Generate Video", "Generate", "ยืนยัน", "เริ่มสร้าง", "ถัดไป"]:
+        # ===== STEP 3 (ตรวจสอบสคริปต์) =====
+        # กด สร้างวิดีโอ / Generate
+        self.log("  [Step 3] กด สร้างวิดีโอ...")
+        for btn_text in ["สร้างวิดีโอ", "Generate Video", "Generate", "ยืนยัน", "เริ่มสร้าง"]:
             btn = await page.query_selector(f'text="{btn_text}"')
             if btn:
-                await btn.click()
-                self.log(f"  กด '{btn_text}'")
-                await page.wait_for_timeout(2000)
-                break
+                try:
+                    await btn.click(timeout=5000)
+                    self.log(f"  ✅ กด '{btn_text}'")
+                    await page.wait_for_timeout(2000)
+                    break
+                except Exception as e:
+                    self.log(f"  ⚠️ กด '{btn_text}' ไม่ได้: {e}")
+        else:
+            self.log("  ⚠️ ไม่พบปุ่ม Generate — ลอง ถัดไป สุดท้าย")
+            await self._click_next(page)
 
     async def _set_video_duration(self, page, seconds="20"):
         """ตั้ง duration ที่ bottom bar เป็น 20S"""
         self.log(f"  ⏱ ตั้ง duration = {seconds}S...")
         try:
-            # คลิก duration dropdown ที่ bottom bar (มักแสดงเป็น "15 S" หรือ "20 S")
-            for current in ["15 S", "15S", "15", "10 S", "10S"]:
-                btn = await page.query_selector(f'text="{current}"')
-                if btn:
-                    await btn.click()
-                    await page.wait_for_timeout(500)
-                    # เลือก 20S จาก dropdown ที่เปิดออกมา
-                    for opt in [f"{seconds} S", f"{seconds}S", seconds]:
-                        el = await page.query_selector(f'text="{opt}"')
-                        if el:
-                            await el.click()
-                            self.log(f"  ✅ duration = {seconds}S")
-                            return
-            self.log(f"  ⚠️ ไม่พบ duration dropdown")
+            # JS approach: หา element ที่ match pattern \d+S แล้วคลิกเพื่อเปิด dropdown
+            # จากนั้นเลือก target
+            result = await page.evaluate(f"""
+                () => {{
+                    const target = "{seconds}";
+                    // Log all duration-like elements
+                    const durationEls = [];
+                    const all = document.querySelectorAll('button, div, span, li, label');
+                    for (const el of all) {{
+                        const t = el.textContent.trim();
+                        if (/^\\d{{1,2}}\\s*[Ss]$/.test(t)) durationEls.push(t);
+                    }}
+                    return durationEls.join(', ') || 'none found';
+                }}
+            """)
+            self.log(f"  Duration elements found: {result}")
+
+            # คลิก current duration เพื่อเปิด dropdown/popover
+            clicked_open = await page.evaluate(f"""
+                () => {{
+                    const target = "{seconds}";
+                    const all = document.querySelectorAll('button, div, span, li, label');
+                    for (const el of all) {{
+                        const t = el.textContent.trim();
+                        // คลิก element ที่ไม่ใช่ target (เพื่อ toggle dropdown)
+                        if (/^\\d{{1,2}}\\s*[Ss]$/.test(t) && !t.startsWith(target)) {{
+                            el.click();
+                            return 'clicked:' + t;
+                        }}
+                    }}
+                    return null;
+                }}
+            """)
+            if clicked_open:
+                self.log(f"  📍 {clicked_open}")
+                await page.wait_for_timeout(600)
+
+            # เลือก target duration
+            selected = await page.evaluate(f"""
+                () => {{
+                    const target = "{seconds}";
+                    const all = document.querySelectorAll('button, div, span, li, label, [role="option"]');
+                    for (const el of all) {{
+                        const t = el.textContent.trim();
+                        if (t === target + 'S' || t === target + ' S' || t === target + 's') {{
+                            el.click();
+                            return 'selected:' + t;
+                        }}
+                    }}
+                    return null;
+                }}
+            """)
+            if selected:
+                self.log(f"  ✅ Duration {selected}")
+                await page.wait_for_timeout(400)
+            else:
+                self.log(f"  ⚠️ ไม่พบ duration {seconds}S")
         except Exception as e:
             self.log(f"  ⚠️ set duration error: {e}")
 
     async def _select_dropdown(self, page, options, label="dropdown"):
-        """เลือก dropdown โดย text options (รองรับทั้ง native select และ custom dropdown)"""
+        """เลือก dropdown รองรับทั้ง native select และ custom dropdown"""
         for opt_text in options:
             try:
                 # ลอง native select ก่อน
@@ -391,17 +455,51 @@ class KaloclipBot:
                         v = await o.get_attribute("value") or ""
                         if opt_text.lower() in t.lower() or opt_text.lower() in v.lower():
                             await sel.select_option(value=v)
-                            self.log(f"  ✅ {label}: เลือก '{t}'")
+                            self.log(f"  ✅ {label}: native select '{t}'")
                             return
-                # ลอง custom dropdown (คลิก element ที่มี text นั้น)
+
+                # ลอง JS click — เหมาะกับ custom React/Vue dropdown
+                result = await page.evaluate(f"""
+                    () => {{
+                        const text = {json.dumps(opt_text)};
+                        // หา dropdown ที่เปิดอยู่ก่อน (li, [role=option], .option, .item)
+                        const candidates = document.querySelectorAll(
+                            'li, [role="option"], [class*="option"], [class*="item"], [class*="menu-item"]'
+                        );
+                        for (const el of candidates) {{
+                            if (el.textContent.trim().includes(text)) {{
+                                el.click();
+                                return 'clicked-list:' + el.textContent.trim().substring(0, 30);
+                            }}
+                        }}
+                        // ถ้าไม่มี dropdown เปิด — หา trigger แล้วคลิก
+                        const triggers = document.querySelectorAll(
+                            '[class*="select"], [class*="dropdown"], [class*="picker"]'
+                        );
+                        for (const el of triggers) {{
+                            if (el.textContent.trim().includes(text)) {{
+                                el.click();
+                                return 'clicked-trigger:' + el.textContent.trim().substring(0, 30);
+                            }}
+                        }}
+                        return null;
+                    }}
+                """)
+                if result:
+                    self.log(f"  ✅ {label}: JS {result}")
+                    await page.wait_for_timeout(400)
+                    return
+
+                # ลอง Playwright text locator
                 el = await page.query_selector(f'text="{opt_text}"')
                 if el:
                     await el.click()
-                    self.log(f"  ✅ {label}: คลิก '{opt_text}'")
-                    await page.wait_for_timeout(300)
+                    self.log(f"  ✅ {label}: text click '{opt_text}'")
+                    await page.wait_for_timeout(400)
                     return
-            except Exception:
-                pass
+
+            except Exception as e:
+                self.log(f"  ⚠️ {label} option '{opt_text}' error: {e}")
         self.log(f"  ⚠️ {label}: ไม่พบ option {options}")
 
     async def _set_video_language(self, page):
@@ -452,25 +550,52 @@ class KaloclipBot:
         self.log("  ⚠️ ไม่พบปุ่มถัดไป")
 
     async def _download_video(self, page, product):
-        self.log("⏳ รอ render... (1-3 นาที)")
+        self.log("⏳ รอ render... (1-5 นาที)")
+
+        # รอปุ่ม Download ปรากฏ (รองรับหลาย selector)
+        download_btn = None
+        for selector in [
+            'text="ดาวน์โหลด"',
+            'text="Download"',
+            'text="ดาวน์โหลดวิดีโอ"',
+            'text="Download Video"',
+            '[class*="download"]',
+            'button:has-text("ดาวน์โหลด")',
+            'button:has-text("Download")',
+            'a:has-text("ดาวน์โหลด")',
+            'a:has-text("Download")',
+        ]:
+            try:
+                download_btn = await page.wait_for_selector(selector, timeout=300_000)
+                if download_btn:
+                    self.log(f"  ✅ พบปุ่ม Download: {selector}")
+                    break
+            except Exception:
+                continue
+
+        if not download_btn:
+            self.log("⚠️ ไม่พบปุ่ม Download หลังรอ 5 นาที")
+            # Screenshot เพื่อ debug
+            try:
+                ss_path = os.path.join(self.output_dir, "debug_render_done.png")
+                await page.screenshot(path=ss_path, full_page=True)
+                self.log("  📸 Screenshot render done saved")
+            except Exception:
+                pass
+            return None
 
         try:
-            download_btn = await page.wait_for_selector(
-                'text="ดาวน์โหลด", text="Download", [class*="download-btn"]',
-                timeout=300_000  # 5 นาที
-            )
-            if download_btn:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                safe_name = "".join(c for c in product["name"][:20] if c.isalnum() or c in "- _")
-                filename = f"{timestamp}_{safe_name}.mp4"
-                save_path = os.path.join(self.output_dir, filename)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            safe_name = "".join(c for c in product["name"][:20] if c.isalnum() or c in "- _")
+            filename = f"{timestamp}_{safe_name}.mp4"
+            save_path = os.path.join(self.output_dir, filename)
 
-                async with page.expect_download(timeout=60_000) as dl_info:
-                    await download_btn.click()
-                dl = await dl_info.value
-                await dl.save_as(save_path)
-                self.log(f"✅ บันทึก: {filename}")
-                return save_path
+            async with page.expect_download(timeout=120_000) as dl_info:
+                await download_btn.click()
+            dl = await dl_info.value
+            await dl.save_as(save_path)
+            self.log(f"✅ บันทึก: {filename}")
+            return save_path
 
         except Exception as e:
             self.log(f"⚠️ Download error: {e}")
