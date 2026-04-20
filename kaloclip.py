@@ -723,15 +723,15 @@ class KaloclipBot:
 
     async def _download_video(self, page, product):
         """
-        Flow หลัง click สร้าง:
-        1. Page navigate ไป "รายการโปรด" — video card แรก = กำลังประมวลผล
-        2. รอ render เสร็จ (กำลังประมวลผล → เสร็จสิ้น) max 15 นาที
-        3. คลิก video card แรก → เปิด detail/player view
-        4. หาปุ่ม ดาวน์โหลด แล้ว download
+        Flow หลัง click สร้าง + dismiss popup:
+        1. Page อาจเป็น detail view (ซ้าย=X% render, ขวา=script panel)
+        2. Navigate ไป รายการโปรด (video list)
+        3. รอ card แรก (newest) เปลี่ยนจาก รอคิว/กำลังประมวลผล → เสร็จสิ้น
+        4. คลิก ⋯ menu บน card แรก → คลิก ดาวน์โหลด
         """
         self.log("⏳ รอ render... (หน้า รายการโปรด)")
 
-        # Screenshot + log ทันที เพื่อ debug
+        # Helper: screenshot + log
         async def _snap(name):
             try:
                 p = os.path.join(self.output_dir, f"{name}.png")
@@ -742,164 +742,212 @@ class KaloclipBot:
                        .map(b => b.textContent.trim()).filter(t => t).join(' | ')"""
                 )
                 body = await page.evaluate("document.body.innerText")
-                self.log(f"  📸 {name} | Btns: {btns[:300]}")
-                self.log(f"  Body: {body[:150]}")
+                self.log(f"  📸 {name} | Btns: {btns[:350]}")
+                self.log(f"  Body: {body[:120]}")
                 return body
             except Exception as e:
                 self.log(f"  ⚠️ snap {name}: {e}")
                 return ""
 
+        # Helper: try download click
+        async def _try_download(btn):
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            safe_name = "".join(c for c in product["name"][:20] if c.isalnum() or c in "- _")
+            save_path = os.path.join(self.output_dir, f"{timestamp}_{safe_name}.mp4")
+            try:
+                async with page.expect_download(timeout=180_000) as dl_info:
+                    await btn.click()
+                dl = await dl_info.value
+                await dl.save_as(save_path)
+                self.log(f"✅ บันทึก: {os.path.basename(save_path)}")
+                return save_path
+            except Exception as e:
+                self.log(f"  ⚠️ download error: {e}")
+                return None
+
+        # รอ 30s ให้หน้า settle
         await page.wait_for_timeout(30_000)
         await _snap("debug_after_create")
 
-        # === Phase 1: รอ render เสร็จ (max 15 นาที) ===
-        self.log("  [Phase 1] รอ render เสร็จ (max 15 นาที)...")
-        render_done = False
+        # ===== Navigate ไป รายการโปรด =====
+        self.log("  [Nav] Navigate ไป รายการโปรด...")
         try:
-            # รอจนไม่มี "กำลังประมวลผล" อีก (video แรกเสร็จ)
+            nav = page.locator('text="รายการโปรด"').first
+            if await nav.is_visible(timeout=3000):
+                await nav.click()
+                await page.wait_for_timeout(2000)
+                self.log("  ✅ อยู่ที่ รายการโปรด แล้ว")
+        except Exception as e:
+            self.log(f"  ⚠️ nav error: {e}")
+
+        await _snap("debug_video_list")
+
+        # ===== Phase 1: รอ render เสร็จ =====
+        # สถานะวิดีโอ: รอคิว → กำลังประมวลผล → เสร็จสิ้น
+        # รอจนทั้ง "รอคิว" และ "กำลังประมวลผล" หายออกจากหน้า
+        self.log("  [Phase 1] รอ render เสร็จ (max 15 นาที)...")
+        try:
             await page.wait_for_function(
-                "() => !document.body.innerText.includes('กำลังประมวลผล')",
-                timeout=900_000  # 15 min
+                """() => {
+                    const t = document.body.innerText;
+                    return !t.includes('รอคิว') && !t.includes('กำลังประมวลผล');
+                }""",
+                timeout=900_000
             )
-            render_done = True
             self.log("  ✅ Render เสร็จสิ้น!")
         except Exception as e:
-            self.log(f"  ⚠️ Render timeout: {e}")
+            self.log(f"  ⚠️ render wait: {e}")
 
         await _snap("debug_render_done")
 
-        # === Phase 2: คลิก video card แรก ===
-        self.log("  [Phase 2] คลิก video card แรก...")
-        clicked_card = False
+        # ===== Phase 2: คลิก ⋯ menu บน card แรก =====
+        # ⋯ button อยู่ที่ top-right ของ video card ที่ completed
+        self.log("  [Phase 2] หา ⋯ menu บน card แรก...")
 
-        # ลองคลิก card thumbnail ด้วยหลาย selector
-        card_selectors = [
-            # Ant Design card
-            '.ant-card:first-of-type',
-            '.ant-card >> nth=0',
-            # Common card patterns
-            '[class*="video-item"] >> nth=0',
-            '[class*="videoItem"] >> nth=0',
-            '[class*="card"] >> nth=0',
-            '[class*="item"] >> nth=0',
-            # คลิก element ที่มี "เสร็จสิ้น"
-            ':has-text("เสร็จสิ้น") >> nth=0',
-        ]
-        for sel in card_selectors:
+        # JS: dump all buttons ที่มี className เพื่อหา class ของ ⋯ button
+        btn_info = await page.evaluate("""
+            () => {
+                const btns = Array.from(document.querySelectorAll('button'));
+                return btns.map(b => ({
+                    text: b.textContent.trim().substring(0, 20),
+                    cls: b.className.substring(0, 60),
+                    vis: b.offsetParent !== null
+                })).filter(b => b.vis).slice(0, 20);
+            }
+        """)
+        self.log(f"  All buttons: {btn_info}")
+
+        # ลอง click ⋯ button ด้วยหลาย approach
+        three_dot_clicked = False
+
+        # Approach A: ลอง Playwright locator
+        for more_sel in [
+            'button:has-text("...")', 'button:has-text("⋯")',
+            '[class*="more"]', '[class*="dots"]', '[class*="option"]',
+            '.ant-dropdown-trigger', '[aria-label="more"]',
+            '[aria-haspopup="true"]',
+        ]:
             try:
-                el = page.locator(sel).first
-                if await el.is_visible(timeout=2000):
+                el = page.locator(more_sel).first
+                if await el.is_visible(timeout=1000):
                     await el.click()
-                    self.log(f"  ✅ คลิก card: {sel}")
-                    clicked_card = True
-                    await page.wait_for_timeout(2000)
+                    self.log(f"  ✅ กด ⋯: {more_sel}")
+                    three_dot_clicked = True
+                    await page.wait_for_timeout(800)
                     break
             except Exception:
                 continue
 
-        if not clicked_card:
-            # Fallback: คลิก JS บน card แรกที่มี เสร็จสิ้น
-            self.log("  ⚠️ ลอง JS click บน card เสร็จสิ้น...")
+        # Approach B: JS click บน button สุดท้ายใน card แรก (⋯ มักเป็น btn สุดท้าย)
+        if not three_dot_clicked:
+            self.log("  ลอง JS click ⋯ (btn สุดท้ายใน card)")
             try:
-                await page.evaluate("""
+                result = await page.evaluate("""
                     () => {
-                        const all = document.querySelectorAll('*');
-                        for (const el of all) {
-                            if (el.textContent.trim() === 'เสร็จสิ้น') {
-                                // คลิก parent card ที่ใหญ่กว่า
-                                let p = el.parentElement;
-                                for (let i = 0; i < 5; i++) {
-                                    if (p && p.offsetWidth > 100) { p.click(); break; }
-                                    p = p?.parentElement;
-                                }
-                                return true;
+                        // หา element ที่มี class ชื่อ "Component" หรือ grid/list container
+                        const containers = Array.from(document.querySelectorAll('[class*="grid"],[class*="list"],[class*="videos"]'));
+                        for (const c of containers) {
+                            const btns = c.querySelectorAll('button');
+                            if (btns.length > 0) {
+                                const lastBtn = btns[btns.length - 1];
+                                lastBtn.click();
+                                return 'clicked last btn in: ' + c.className.substring(0, 40);
                             }
                         }
-                        return false;
+                        // fallback: click ⋯ หรือ ... ที่ไหนก็ได้
+                        const all = document.querySelectorAll('button');
+                        for (const b of all) {
+                            const t = b.textContent.trim();
+                            if (t === '...' || t === '⋯' || t === '···') {
+                                b.click();
+                                return 'clicked: ' + t;
+                            }
+                        }
+                        return null;
                     }
                 """)
-                await page.wait_for_timeout(2000)
-                clicked_card = True
+                if result:
+                    self.log(f"  ✅ JS ⋯: {result}")
+                    three_dot_clicked = True
+                    await page.wait_for_timeout(800)
             except Exception as e:
-                self.log(f"  ⚠️ JS click error: {e}")
+                self.log(f"  ⚠️ JS ⋯: {e}")
 
-        body_after = await _snap("debug_after_card_click")
+        await _snap("debug_after_threedots")
 
-        # === Phase 3: หาปุ่ม ดาวน์โหลด ===
-        self.log("  [Phase 3] หาปุ่ม ดาวน์โหลด...")
-        download_btn = None
-        DL_SELS = [
+        # ===== Phase 3: คลิก ดาวน์โหลด ใน dropdown menu =====
+        self.log("  [Phase 3] หา ดาวน์โหลด ใน menu...")
+        DL_MENU_SELS = [
+            'li:has-text("ดาวน์โหลด")',
+            '[role="menuitem"]:has-text("ดาวน์โหลด")',
+            '[class*="menu"]:has-text("ดาวน์โหลด")',
             'button:has-text("ดาวน์โหลด")',
             'a:has-text("ดาวน์โหลด")',
+            ':has-text("ดาวน์โหลด")',
             'button:has-text("Download")',
-            'a:has-text("Download")',
-            '[class*="download"]:not([class*="icon"]):not([class*="disabled"])',
-            'button:has-text("บันทึกวิดีโอ")',
             'a[download]',
             'a[href*=".mp4"]',
-            'a[href*="download"]',
         ]
-        for sel in DL_SELS:
+        for sel in DL_MENU_SELS:
             try:
                 el = page.locator(sel).first
-                if await el.is_visible(timeout=5000):
-                    download_btn = el
+                if await el.is_visible(timeout=3000):
                     self.log(f"  ✅ พบ Download: {sel}")
+                    result = await _try_download(el)
+                    if result:
+                        return result
                     break
             except Exception:
                 continue
 
-        if not download_btn:
-            self.log("⚠️ ไม่พบปุ่ม ดาวน์โหลด — ลอง hover บน card")
-            # Hover อาจแสดงปุ่ม download
-            try:
-                first_card = page.locator('[class*="card"],[class*="item"]').first
-                await first_card.hover()
-                await page.wait_for_timeout(1000)
-                for sel in DL_SELS:
-                    try:
-                        el = page.locator(sel).first
-                        if await el.is_visible(timeout=2000):
-                            download_btn = el
-                            self.log(f"  ✅ พบ Download (hover): {sel}")
-                            break
-                    except Exception:
-                        continue
-            except Exception as e:
-                self.log(f"  ⚠️ hover error: {e}")
+        # ===== Fallback: คลิก card เพื่อเปิด detail view แล้วหา download =====
+        self.log("  [Fallback] คลิก card เพื่อเปิด detail view...")
+        await page.keyboard.press("Escape")  # ปิด menu เก่า
+        await page.wait_for_timeout(500)
 
-        if not download_btn:
-            self.log("⚠️ ไม่พบปุ่ม ดาวน์โหลด เลย")
-            return None
-
-        # === Phase 4: Download ===
+        # JS: หา card แรกที่มี "เสร็จสิ้น" แล้วคลิก thumbnail area
         try:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            safe_name = "".join(c for c in product["name"][:20] if c.isalnum() or c in "- _")
-            filename = f"{timestamp}_{safe_name}.mp4"
-            save_path = os.path.join(self.output_dir, filename)
-
-            async with page.expect_download(timeout=180_000) as dl_info:
-                await download_btn.click()
-            dl = await dl_info.value
-            await dl.save_as(save_path)
-            self.log(f"✅ บันทึก: {filename}")
-            return save_path
-
+            await page.evaluate("""
+                () => {
+                    // หา element ที่มี เสร็จสิ้น แล้ว traverse ขึ้นไปหา card container
+                    const all = Array.from(document.querySelectorAll('*'));
+                    for (const el of all) {
+                        if (el.childElementCount === 0 && el.textContent.trim() === 'เสร็จสิ้น') {
+                            let p = el.parentElement;
+                            for (let i = 0; i < 8; i++) {
+                                if (p && p.offsetWidth > 150 && p.offsetHeight > 150) {
+                                    // หา img หรือ video area ใน card
+                                    const img = p.querySelector('img, video, [class*="thumb"], [class*="preview"]');
+                                    if (img) { img.click(); return 'clicked thumb in card'; }
+                                    p.click();
+                                    return 'clicked card';
+                                }
+                                p = p?.parentElement;
+                            }
+                            break;
+                        }
+                    }
+                    return null;
+                }
+            """)
+            await page.wait_for_timeout(3000)
         except Exception as e:
-            self.log(f"⚠️ Download error: {e}")
-            # ลอง get href แล้ว navigate
-            try:
-                href = await download_btn.get_attribute("href")
-                if href and (".mp4" in href or "download" in href):
-                    save_path = os.path.join(self.output_dir, f"{timestamp}_{safe_name}.mp4")
-                    async with page.expect_download(timeout=180_000) as dl_info:
-                        await page.goto(href)
-                    dl = await dl_info.value
-                    await dl.save_as(save_path)
-                    self.log(f"✅ บันทึก (href): {filename}")
-                    return save_path
-            except Exception as e2:
-                self.log(f"⚠️ href download error: {e2}")
+            self.log(f"  ⚠️ card click: {e}")
 
+        await _snap("debug_detail_view")
+
+        # ลอง download ใน detail view
+        for sel in DL_MENU_SELS:
+            try:
+                el = page.locator(sel).first
+                if await el.is_visible(timeout=3000):
+                    self.log(f"  ✅ Detail view download: {sel}")
+                    result = await _try_download(el)
+                    if result:
+                        return result
+                    break
+            except Exception:
+                continue
+
+        self.log("⚠️ ไม่พบปุ่ม ดาวน์โหลด — ดู screenshot debug_detail_view")
         return None
