@@ -722,87 +722,164 @@ class KaloclipBot:
         self.log("  ⚠️ ไม่พบปุ่มถัดไป")
 
     async def _download_video(self, page, product):
-        self.log("⏳ รอ render... (1-5 นาที)")
+        """
+        Flow หลัง click สร้าง:
+        1. Page navigate ไป "รายการโปรด" — video card แรก = กำลังประมวลผล
+        2. รอ render เสร็จ (กำลังประมวลผล → เสร็จสิ้น) max 15 นาที
+        3. คลิก video card แรก → เปิด detail/player view
+        4. หาปุ่ม ดาวน์โหลด แล้ว download
+        """
+        self.log("⏳ รอ render... (หน้า รายการโปรด)")
 
-        # --- รอ 60 วินาที แล้ว screenshot + log buttons เพื่อรู้ว่าหน้าเป็นอะไร ---
-        await page.wait_for_timeout(60_000)
-        try:
-            ss_path = os.path.join(self.output_dir, "debug_after_create.png")
-            await page.screenshot(path=ss_path, full_page=True)
-            all_text = await page.evaluate("document.body.innerText")
-            btns = await page.evaluate(
-                """Array.from(document.querySelectorAll('button,a'))
-                   .filter(b => b.offsetParent !== null)
-                   .map(b => b.textContent.trim()).filter(t => t).join(' | ')"""
-            )
-            self.log(f"  📸 After-create 60s: {ss_path}")
-            self.log(f"  Body(200): {all_text[:200]}")
-            self.log(f"  Btns: {btns[:400]}")
-        except Exception as e:
-            self.log(f"  ⚠️ screenshot error: {e}")
-
-        # รอปุ่ม Download ปรากฏ (timeout 30s ต่อ selector — รวดเร็ว ไม่ค้าง)
-        SELECTORS = [
-            'button:has-text("ดาวน์โหลด")',
-            'a:has-text("ดาวน์โหลด")',
-            'button:has-text("Download")',
-            'a:has-text("Download")',
-            'text="ดาวน์โหลด"',
-            'text="Download"',
-            'text="ดาวน์โหลดวิดีโอ"',
-            'text="Download Video"',
-            'button:has-text("บันทึก")',
-            'button:has-text("Save")',
-            'button:has-text("Export")',
-            'button:has-text("ส่งออก")',
-            '[class*="download"]:not([class*="icon"])',
-        ]
-
-        download_btn = None
-        for attempt in range(3):  # ลอง 3 รอบ รอบละ ~6 นาที
-            for selector in SELECTORS:
-                try:
-                    download_btn = await page.wait_for_selector(selector, timeout=30_000)
-                    if download_btn and await download_btn.is_visible():
-                        self.log(f"  ✅ พบปุ่ม Download: {selector} (รอบ {attempt+1})")
-                        break
-                    download_btn = None
-                except Exception:
-                    continue
-            if download_btn:
-                break
-            # ยังไม่เจอ — screenshot ซ้ำแล้วรออีก 2 นาที
-            self.log(f"  ⏳ รอบ {attempt+1} ไม่เจอ — รออีก 2 นาที...")
-            await page.wait_for_timeout(120_000)
+        # Screenshot + log ทันที เพื่อ debug
+        async def _snap(name):
             try:
-                ss2 = os.path.join(self.output_dir, f"debug_after_create_{attempt+2}.png")
-                await page.screenshot(path=ss2, full_page=True)
-                btns2 = await page.evaluate(
+                p = os.path.join(self.output_dir, f"{name}.png")
+                await page.screenshot(path=p, full_page=True)
+                btns = await page.evaluate(
                     """Array.from(document.querySelectorAll('button,a'))
                        .filter(b => b.offsetParent !== null)
                        .map(b => b.textContent.trim()).filter(t => t).join(' | ')"""
                 )
-                self.log(f"  📸 rnd{attempt+2}: {btns2[:400]}")
+                body = await page.evaluate("document.body.innerText")
+                self.log(f"  📸 {name} | Btns: {btns[:300]}")
+                self.log(f"  Body: {body[:150]}")
+                return body
+            except Exception as e:
+                self.log(f"  ⚠️ snap {name}: {e}")
+                return ""
+
+        await page.wait_for_timeout(30_000)
+        await _snap("debug_after_create")
+
+        # === Phase 1: รอ render เสร็จ (max 15 นาที) ===
+        self.log("  [Phase 1] รอ render เสร็จ (max 15 นาที)...")
+        render_done = False
+        try:
+            # รอจนไม่มี "กำลังประมวลผล" อีก (video แรกเสร็จ)
+            await page.wait_for_function(
+                "() => !document.body.innerText.includes('กำลังประมวลผล')",
+                timeout=900_000  # 15 min
+            )
+            render_done = True
+            self.log("  ✅ Render เสร็จสิ้น!")
+        except Exception as e:
+            self.log(f"  ⚠️ Render timeout: {e}")
+
+        await _snap("debug_render_done")
+
+        # === Phase 2: คลิก video card แรก ===
+        self.log("  [Phase 2] คลิก video card แรก...")
+        clicked_card = False
+
+        # ลองคลิก card thumbnail ด้วยหลาย selector
+        card_selectors = [
+            # Ant Design card
+            '.ant-card:first-of-type',
+            '.ant-card >> nth=0',
+            # Common card patterns
+            '[class*="video-item"] >> nth=0',
+            '[class*="videoItem"] >> nth=0',
+            '[class*="card"] >> nth=0',
+            '[class*="item"] >> nth=0',
+            # คลิก element ที่มี "เสร็จสิ้น"
+            ':has-text("เสร็จสิ้น") >> nth=0',
+        ]
+        for sel in card_selectors:
+            try:
+                el = page.locator(sel).first
+                if await el.is_visible(timeout=2000):
+                    await el.click()
+                    self.log(f"  ✅ คลิก card: {sel}")
+                    clicked_card = True
+                    await page.wait_for_timeout(2000)
+                    break
             except Exception:
-                pass
+                continue
+
+        if not clicked_card:
+            # Fallback: คลิก JS บน card แรกที่มี เสร็จสิ้น
+            self.log("  ⚠️ ลอง JS click บน card เสร็จสิ้น...")
+            try:
+                await page.evaluate("""
+                    () => {
+                        const all = document.querySelectorAll('*');
+                        for (const el of all) {
+                            if (el.textContent.trim() === 'เสร็จสิ้น') {
+                                // คลิก parent card ที่ใหญ่กว่า
+                                let p = el.parentElement;
+                                for (let i = 0; i < 5; i++) {
+                                    if (p && p.offsetWidth > 100) { p.click(); break; }
+                                    p = p?.parentElement;
+                                }
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+                """)
+                await page.wait_for_timeout(2000)
+                clicked_card = True
+            except Exception as e:
+                self.log(f"  ⚠️ JS click error: {e}")
+
+        body_after = await _snap("debug_after_card_click")
+
+        # === Phase 3: หาปุ่ม ดาวน์โหลด ===
+        self.log("  [Phase 3] หาปุ่ม ดาวน์โหลด...")
+        download_btn = None
+        DL_SELS = [
+            'button:has-text("ดาวน์โหลด")',
+            'a:has-text("ดาวน์โหลด")',
+            'button:has-text("Download")',
+            'a:has-text("Download")',
+            '[class*="download"]:not([class*="icon"]):not([class*="disabled"])',
+            'button:has-text("บันทึกวิดีโอ")',
+            'a[download]',
+            'a[href*=".mp4"]',
+            'a[href*="download"]',
+        ]
+        for sel in DL_SELS:
+            try:
+                el = page.locator(sel).first
+                if await el.is_visible(timeout=5000):
+                    download_btn = el
+                    self.log(f"  ✅ พบ Download: {sel}")
+                    break
+            except Exception:
+                continue
 
         if not download_btn:
-            self.log("⚠️ ไม่พบปุ่ม Download หลังรอทุก selector")
+            self.log("⚠️ ไม่พบปุ่ม ดาวน์โหลด — ลอง hover บน card")
+            # Hover อาจแสดงปุ่ม download
             try:
-                ss_path = os.path.join(self.output_dir, "debug_render_done.png")
-                await page.screenshot(path=ss_path, full_page=True)
-                self.log("  📸 Screenshot render done saved")
-            except Exception:
-                pass
+                first_card = page.locator('[class*="card"],[class*="item"]').first
+                await first_card.hover()
+                await page.wait_for_timeout(1000)
+                for sel in DL_SELS:
+                    try:
+                        el = page.locator(sel).first
+                        if await el.is_visible(timeout=2000):
+                            download_btn = el
+                            self.log(f"  ✅ พบ Download (hover): {sel}")
+                            break
+                    except Exception:
+                        continue
+            except Exception as e:
+                self.log(f"  ⚠️ hover error: {e}")
+
+        if not download_btn:
+            self.log("⚠️ ไม่พบปุ่ม ดาวน์โหลด เลย")
             return None
 
+        # === Phase 4: Download ===
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             safe_name = "".join(c for c in product["name"][:20] if c.isalnum() or c in "- _")
             filename = f"{timestamp}_{safe_name}.mp4"
             save_path = os.path.join(self.output_dir, filename)
 
-            async with page.expect_download(timeout=120_000) as dl_info:
+            async with page.expect_download(timeout=180_000) as dl_info:
                 await download_btn.click()
             dl = await dl_info.value
             await dl.save_as(save_path)
@@ -811,5 +888,18 @@ class KaloclipBot:
 
         except Exception as e:
             self.log(f"⚠️ Download error: {e}")
+            # ลอง get href แล้ว navigate
+            try:
+                href = await download_btn.get_attribute("href")
+                if href and (".mp4" in href or "download" in href):
+                    save_path = os.path.join(self.output_dir, f"{timestamp}_{safe_name}.mp4")
+                    async with page.expect_download(timeout=180_000) as dl_info:
+                        await page.goto(href)
+                    dl = await dl_info.value
+                    await dl.save_as(save_path)
+                    self.log(f"✅ บันทึก (href): {filename}")
+                    return save_path
+            except Exception as e2:
+                self.log(f"⚠️ href download error: {e2}")
 
         return None
