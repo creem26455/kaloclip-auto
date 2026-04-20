@@ -478,163 +478,197 @@ class KaloclipBot:
 
     async def _set_duration_step3(self, page):
         """ตั้ง duration = 20S ใน Step 3 bottom bar
-        Duration dropdown ไม่ใช่ standard Ant Design Select — ต้องใช้วิธีพิเศษ
+        Kaloclip ใช้ custom Ant Design — inner element = .ant-select-content (ไม่ใช่ .ant-select-selector)
         """
         self.log("  ⏱ ตั้ง duration = 20S...")
 
-        # --- Dump element structure ก่อน ---
-        duration_info = await page.evaluate("""
-            () => {
-                const result = [];
-                for (const el of document.querySelectorAll('*')) {
-                    const t = el.childNodes.length === 1 && el.firstChild?.nodeType === 3
-                        ? el.textContent.trim()
-                        : el.textContent.trim();
-                    if (/^\\d{1,2}\\s*[Ss]$/.test(t) && el.offsetParent !== null) {
-                        const rect = el.getBoundingClientRect();
-                        result.push({
-                            tag: el.tagName,
-                            text: t,
-                            cls: el.className.substring(0, 80),
-                            parent_cls: (el.parentElement?.className || '').substring(0, 60),
-                            x: Math.round(rect.x), y: Math.round(rect.y),
-                            w: Math.round(rect.width), h: Math.round(rect.height)
-                        });
-                        if (result.length >= 10) break;
+        # Helper: ตรวจว่าเปลี่ยนสำเร็จ
+        async def _check_ok():
+            body = await page.evaluate("document.body.innerText")
+            return "20 S" in body
+
+        # Helper: dump ALL visible elements หลังคลิก เพื่อหา option class จริงๆ
+        async def _dump_new_elements():
+            return await page.evaluate("""
+                () => {
+                    const found = [];
+                    for (const el of document.querySelectorAll('*')) {
+                        if (el.offsetParent === null) continue;
+                        const t = el.textContent.trim();
+                        const cls = el.className || '';
+                        // หา elements ที่เป็น option หรือมี duration text
+                        if (
+                            /^\\d{1,2}\\s*[Ss]$/.test(t) ||
+                            cls.includes('dropdown') || cls.includes('popup') ||
+                            cls.includes('option') || cls.includes('select-item') ||
+                            cls.includes('param-') || cls.includes('select-list')
+                        ) {
+                            const rect = el.getBoundingClientRect();
+                            found.push({
+                                tag: el.tagName,
+                                text: t.substring(0, 20),
+                                cls: cls.substring(0, 80),
+                                x: Math.round(rect.x), y: Math.round(rect.y)
+                            });
+                        }
+                        if (found.length >= 30) break;
                     }
+                    return found;
                 }
-                return result;
+            """)
+
+        # ===== Approach A: คลิก .ant-select-content (inner element จริงๆ) =====
+        # Known structure: .param-select > .ant-select-content > .ant-select-content-value
+        self.log("  [A] คลิก .ant-select-content โดยตรง...")
+        try:
+            # หา .param-select dropdown
+            param_sel = page.locator('.param-select').first
+            if await param_sel.is_visible(timeout=2000):
+                inner = param_sel.locator('.ant-select-content').first
+                if await inner.is_visible(timeout=1000):
+                    await inner.scroll_into_view_if_needed()
+                    await inner.click()
+                    self.log("  🖱 [A] clicked .ant-select-content")
+                    await page.wait_for_timeout(1500)
+
+                    # Dump new elements
+                    new_els = await _dump_new_elements()
+                    self.log(f"  [A] new elements: {new_els}")
+
+                    # ลองคลิก option 20 S ด้วยหลาย selectors
+                    for opt in ["20 S", "20S", "20"]:
+                        for sel in [
+                            f'.ant-select-item:has-text("{opt}")',
+                            f'.ant-select-content-item:has-text("{opt}")',
+                            f'[class*="option"]:has-text("{opt}")',
+                            f'[class*="item"]:has-text("{opt}")',
+                            f'[class*="select"]:has-text("{opt}")',
+                            f'li:has-text("{opt}")',
+                        ]:
+                            try:
+                                el = page.locator(sel).first
+                                if await el.is_visible(timeout=400):
+                                    await el.click()
+                                    self.log(f"  ✅ [A] selected '{opt}' via {sel.split(':')[0]}")
+                                    await page.wait_for_timeout(500)
+                                    if await _check_ok():
+                                        return True
+                            except Exception:
+                                continue
+
+                    # ลอง get_by_text exact
+                    for opt in ["20 S", "20S"]:
+                        try:
+                            el = page.get_by_text(opt, exact=True).first
+                            if await el.is_visible(timeout=400):
+                                await el.click()
+                                self.log(f"  ✅ [A] get_by_text '{opt}'")
+                                await page.wait_for_timeout(500)
+                                if await _check_ok():
+                                    return True
+                        except Exception:
+                            continue
+        except Exception as e:
+            self.log(f"  ⚠️ [A]: {e}")
+
+        # ===== Approach B: JS click .ant-select-content + dump dropdown HTML =====
+        self.log("  [B] JS click .ant-select-content + dump dropdown...")
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(300)
+
+        js_b = await page.evaluate("""
+            () => {
+                // หา .ant-select-content ของ param-select
+                const paramSel = document.querySelector('.param-select');
+                if (!paramSel) return {err: 'no .param-select'};
+                const content = paramSel.querySelector('.ant-select-content');
+                if (!content) return {err: 'no .ant-select-content', paramHTML: paramSel.innerHTML.substring(0,300)};
+
+                // Click + dispatch events
+                content.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, view:window}));
+                content.dispatchEvent(new MouseEvent('mouseup',   {bubbles:true, cancelable:true, view:window}));
+                content.click();
+                return {clicked: content.className, paramHTML: paramSel.outerHTML.substring(0, 400)};
             }
         """)
-        self.log(f"  Duration elements: {duration_info}")
+        self.log(f"  [B] JS: {str(js_b)[:300]}")
+        await page.wait_for_timeout(1500)
 
-        # --- Approach 1: คลิก "20 S" ตรงๆ (radio button / button group) ---
-        for target_text in ["20 S", "20S"]:
-            try:
-                els = await page.query_selector_all(f'text="{target_text}"')
-                for el in els:
-                    if await el.is_visible():
-                        bbox = await el.bounding_box()
-                        if bbox:
-                            cx = bbox['x'] + bbox['width'] / 2
-                            cy = bbox['y'] + bbox['height'] / 2
-                            await page.mouse.click(cx, cy)
-                            self.log(f"  🖱 mouse.click on '{target_text}' at ({cx:.0f},{cy:.0f})")
-                            await page.wait_for_timeout(500)
-                            body = await page.evaluate("document.body.innerText")
-                            # ตรวจว่าเปลี่ยนสำเร็จ
-                            if "20 S" in body and "8 S" not in body:
-                                self.log("  ✅ Duration = 20S ✓ (approach 1)")
-                                return True
-            except Exception as e:
-                self.log(f"  ⚠️ approach 1 '{target_text}': {e}")
-
-        # --- Approach 2: JS dispatchEvent mousedown บน element ที่มี "8 S" ---
-        js_result = await page.evaluate("""
+        # Dump ALL body innerHTML ส่วนที่อาจเป็น dropdown
+        dropdown_html = await page.evaluate("""
             () => {
-                // หา element ที่มีเฉพาะ "8 S" แล้วลอง trigger
-                const all = document.querySelectorAll('*');
-                for (const el of all) {
-                    const t = el.textContent.trim();
-                    if ((t === '8 S' || t === '8S') && el.offsetParent !== null) {
-                        // Try parent (dropdown trigger wrapper)
-                        const trigger = el.closest('.ant-select') || el.parentElement || el;
-                        const inner = trigger.querySelector('.ant-select-selector') || trigger;
-                        inner.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true}));
-                        inner.dispatchEvent(new MouseEvent('mouseup',   {bubbles:true, cancelable:true}));
-                        inner.dispatchEvent(new MouseEvent('click',     {bubbles:true, cancelable:true}));
-                        return {
-                            triggered: inner.tagName + ' ' + inner.className.substring(0,50),
-                            parent: trigger.className.substring(0,50)
-                        };
-                    }
-                }
-                return null;
+                // หา dropdown container ที่ append ไปที่ body (Ant Design popup)
+                const bodyChildren = Array.from(document.body.children);
+                const popups = bodyChildren.filter(el =>
+                    el.className && (
+                        el.className.includes('dropdown') ||
+                        el.className.includes('popup') ||
+                        el.className.includes('ant-select') ||
+                        el.className.includes('overlay')
+                    ) && el.offsetParent !== null
+                );
+                return popups.map(el => ({
+                    cls: el.className.substring(0,80),
+                    html: el.innerHTML.substring(0,400)
+                }));
             }
         """)
-        self.log(f"  JS dispatch: {js_result}")
-        await page.wait_for_timeout(1200)
+        self.log(f"  [B] dropdown popups: {str(dropdown_html)[:500]}")
 
-        # ดู options ที่ปรากฏ
-        options_visible = await page.evaluate("""
-            () => Array.from(document.querySelectorAll(
-                '.ant-select-item, .ant-select-item-option, [role="option"], ' +
-                '.ant-select-dropdown li, .ant-dropdown li'
-            )).filter(e => e.offsetParent !== null)
-              .map(e => e.textContent.trim()).join(' | ')
-        """)
-        self.log(f"  Options after dispatch: {options_visible[:200]}")
+        new_els_b = await _dump_new_elements()
+        self.log(f"  [B] new elements: {new_els_b}")
 
-        if options_visible:
-            for opt_text in ["20 S", "20S", "20"]:
+        # ลองคลิก option
+        for opt in ["20 S", "20S", "20"]:
+            for sel in [
+                f'[class*="select-item"]:has-text("{opt}")',
+                f'[class*="option"]:has-text("{opt}")',
+                f'[class*="item"]:has-text("{opt}")',
+                f'li:has-text("{opt}")',
+                f'[role="option"]:has-text("{opt}")',
+                f'text="{opt}"',
+            ]:
                 try:
-                    opt_el = page.locator(
-                        f'.ant-select-item:has-text("{opt_text}"), '
-                        f'[role="option"]:has-text("{opt_text}")'
-                    ).first
-                    if await opt_el.is_visible(timeout=500):
-                        await opt_el.click()
-                        self.log(f"  ✅ selected '{opt_text}' via dispatch")
+                    el = page.locator(sel).first
+                    if await el.is_visible(timeout=400):
+                        await el.click()
+                        self.log(f"  ✅ [B] '{opt}' via {sel.split(':')[0]}")
                         await page.wait_for_timeout(500)
-                        body = await page.evaluate("document.body.innerText")
-                        if "20 S" in body:
+                        if await _check_ok():
                             return True
                 except Exception:
                     continue
 
-        # --- Approach 3: mouse.click บน coordinate ของ "8 S" element ---
+        # ===== Approach C: Keyboard navigation =====
+        self.log("  [C] Keyboard navigation...")
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(200)
         try:
-            bbox_info = await page.evaluate("""
-                () => {
-                    for (const el of document.querySelectorAll('*')) {
-                        const t = el.textContent.trim();
-                        if ((t === '8 S' || t === '8S') && el.offsetParent !== null) {
-                            const rect = el.getBoundingClientRect();
-                            return {x: rect.x, y: rect.y, w: rect.width, h: rect.height,
-                                    cls: el.className.substring(0,80)};
-                        }
-                    }
-                    return null;
-                }
-            """)
-            if bbox_info and bbox_info.get('w', 0) > 0:
-                cx = bbox_info['x'] + bbox_info['w'] / 2
-                cy = bbox_info['y'] + bbox_info['h'] / 2
-                self.log(f"  🖱 approach 3: mouse.click '8 S' at ({cx:.0f},{cy:.0f}) cls={bbox_info['cls'][:40]}")
-                await page.mouse.move(cx, cy)
-                await page.mouse.down()
-                await page.wait_for_timeout(150)
-                await page.mouse.up()
-                await page.wait_for_timeout(1200)
+            # Focus .ant-select-content แล้วใช้ keyboard
+            param_loc = page.locator('.param-select .ant-select-content').first
+            if await param_loc.is_visible(timeout=1000):
+                await param_loc.focus()
+                await page.wait_for_timeout(300)
+                await page.keyboard.press("Space")
+                await page.wait_for_timeout(800)
+                opts_c = await _dump_new_elements()
+                self.log(f"  [C] after Space: {opts_c}")
 
-                # ตรวจ options
-                opts2 = await page.evaluate("""
-                    () => Array.from(document.querySelectorAll(
-                        '.ant-select-item, [role="option"], .ant-select-dropdown *'
-                    )).filter(e => e.offsetParent !== null)
-                      .map(e => e.textContent.trim()).filter(t=>t).join(' | ')
-                """)
-                self.log(f"  Options after approach 3: {opts2[:200]}")
-
-                for opt_text in ["20 S", "20S"]:
-                    try:
-                        opt_el = page.get_by_text(opt_text, exact=True).first
-                        if await opt_el.is_visible(timeout=800):
-                            await opt_el.click()
-                            self.log(f"  ✅ selected '{opt_text}' via approach 3")
-                            await page.wait_for_timeout(500)
-                            body = await page.evaluate("document.body.innerText")
-                            if "20 S" in body:
-                                return True
-                    except Exception:
-                        continue
+                # ลอง ArrowDown หลายครั้ง
+                for _ in range(5):
+                    await page.keyboard.press("ArrowDown")
+                    await page.wait_for_timeout(200)
+                    if await _check_ok():
+                        await page.keyboard.press("Enter")
+                        self.log("  ✅ [C] Duration = 20S via keyboard")
+                        return True
+                await page.keyboard.press("Escape")
         except Exception as e:
-            self.log(f"  ⚠️ approach 3: {e}")
+            self.log(f"  ⚠️ [C]: {e}")
 
         # --- Final check ---
-        body_final = await page.evaluate("document.body.innerText")
-        if "20 S" in body_final:
-            self.log("  ✅ Duration = 20S ✓ (already set)")
+        if await _check_ok():
+            self.log("  ✅ Duration = 20S ✓")
             return True
 
         self.log("  ❌ Duration ยังเป็น 8S — หยุดไม่สร้างคลิป!")
