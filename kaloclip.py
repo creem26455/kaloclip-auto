@@ -516,18 +516,31 @@ class KaloclipBot:
                 }
             """)
 
-        # ===== Approach A: คลิก .ant-select-content (inner element จริงๆ) =====
-        # Known structure: .param-select > .ant-select-content > .ant-select-content-value
-        self.log("  [A] คลิก .ant-select-content โดยตรง...")
+        # ===== Approach A: คลิก .ant-select-content บน duration .param-select โดยตรง =====
+        # Bottom bar มีหลาย .param-select: [9:16 ratio] [8S duration] [1080P quality]
+        # ต้องหา .param-select ที่มี text "8 S" เท่านั้น — ไม่ใช่ first match!
+        self.log("  [A] คลิก .ant-select-content บน duration dropdown...")
+
+        # หา duration .param-select ที่ถูกต้อง
+        async def _find_duration_param():
+            els = await page.locator('.param-select').all()
+            for el in els:
+                try:
+                    t = await el.inner_text()
+                    if '8 S' in t or '20 S' in t or ('S' in t and any(c.isdigit() for c in t)):
+                        return el
+                except Exception:
+                    continue
+            return None
+
         try:
-            # หา .param-select dropdown
-            param_sel = page.locator('.param-select').first
-            if await param_sel.is_visible(timeout=2000):
-                inner = param_sel.locator('.ant-select-content').first
+            duration_param = await _find_duration_param()
+            if duration_param:
+                inner = duration_param.locator('.ant-select-content').first
                 if await inner.is_visible(timeout=1000):
                     await inner.scroll_into_view_if_needed()
                     await inner.click()
-                    self.log("  🖱 [A] clicked .ant-select-content")
+                    self.log("  🖱 [A] clicked duration .ant-select-content")
                     await page.wait_for_timeout(1500)
 
                     # Dump new elements
@@ -571,16 +584,22 @@ class KaloclipBot:
             self.log(f"  ⚠️ [A]: {e}")
 
         # ===== Approach B: React __reactProps — เรียก onMouseDown handler โดยตรง =====
-        # เหตุผล: click .ant-select-content เพิ่ม ant-select-focused แต่ไม่เพิ่ม ant-select-open
-        # → React event handler ถูก bind ที่ level ต่างกัน ต้อง trigger via React internals
         self.log("  [B] React __reactProps onMouseDown...")
         await page.keyboard.press("Escape")
         await page.wait_for_timeout(300)
 
         js_b = await page.evaluate("""
             () => {
-                const paramSel = document.querySelector('.param-select');
-                if (!paramSel) return {err: 'no .param-select'};
+                // หา .param-select ที่มี "8 S" (duration) ไม่ใช่ 9:16 (ratio)
+                const allParams = document.querySelectorAll('.param-select');
+                let paramSel = null;
+                for (const el of allParams) {
+                    const t = el.textContent.trim();
+                    if (/^\\d{1,2}\\s*S$/.test(t) || t === '8 S' || t === '20 S') {
+                        paramSel = el; break;
+                    }
+                }
+                if (!paramSel) return {err: 'no duration .param-select', found: Array.from(allParams).map(e=>e.textContent.trim().substring(0,10)).join(',')};
 
                 // ค้นหา __reactProps key
                 const reactKey = Object.keys(paramSel).find(k =>
@@ -674,16 +693,23 @@ class KaloclipBot:
                 except Exception:
                     continue
 
-        # ===== Approach D: React __reactFiber traverse → call onChange directly =====
-        # Bypass UI ทั้งหมด — เรียก onChange({value:'20', label:'20 S'}) โดยตรง
-        self.log("  [D] React fiber onChange...")
+        # ===== Approach D: React fiber → onChange บน duration dropdown โดยตรง =====
+        self.log("  [D] React fiber onChange on duration...")
         await page.keyboard.press("Escape")
         await page.wait_for_timeout(200)
 
         js_d = await page.evaluate("""
             () => {
-                const paramSel = document.querySelector('.param-select');
-                if (!paramSel) return {err: 'no .param-select'};
+                // หา duration .param-select (text = "8 S" หรือ pattern \\d+S)
+                const allParams = document.querySelectorAll('.param-select');
+                let paramSel = null;
+                for (const el of allParams) {
+                    const t = el.textContent.trim();
+                    if (/^\\d{1,2}\\s*S$/.test(t) || t === '8 S' || t === '20 S') {
+                        paramSel = el; break;
+                    }
+                }
+                if (!paramSel) return {err: 'no duration .param-select'};
 
                 // หา React fiber
                 const fiberKey = Object.keys(paramSel).find(k =>
@@ -717,13 +743,16 @@ class KaloclipBot:
             self.log("  ✅ [D] Duration = 20S via React onChange ✓")
             return True
 
-        # ===== Approach C: Keyboard navigation =====
-        self.log("  [C] Keyboard navigation...")
+        # ===== Approach C: Keyboard navigation บน duration dropdown =====
+        self.log("  [C] Keyboard navigation on duration...")
         await page.keyboard.press("Escape")
         await page.wait_for_timeout(200)
         try:
-            # Focus .ant-select-content แล้วใช้ keyboard
-            param_loc = page.locator('.param-select .ant-select-content').first
+            # Focus .ant-select-content ของ duration param-select เท่านั้น
+            duration_param_c = await _find_duration_param()
+            if not duration_param_c:
+                raise Exception("no duration param")
+            param_loc = duration_param_c.locator('.ant-select-content').first
             if await param_loc.is_visible(timeout=1000):
                 await param_loc.focus()
                 await page.wait_for_timeout(300)
