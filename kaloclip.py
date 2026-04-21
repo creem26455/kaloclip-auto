@@ -487,7 +487,7 @@ class KaloclipBot:
             body = await page.evaluate("document.body.innerText")
             return "20 S" in body
 
-        # Helper: dump ALL visible elements หลังคลิก เพื่อหา option class จริงๆ
+        # Helper: dump visible elements — ใช้ getAttribute แทน .className เพื่อรองรับ SVG
         async def _dump_new_elements():
             return await page.evaluate("""
                 () => {
@@ -495,8 +495,7 @@ class KaloclipBot:
                     for (const el of document.querySelectorAll('*')) {
                         if (el.offsetParent === null) continue;
                         const t = el.textContent.trim();
-                        const cls = el.className || '';
-                        // หา elements ที่เป็น option หรือมี duration text
+                        const cls = el.getAttribute('class') || '';  // ไม่ใช้ .className (SVG bug)
                         if (
                             /^\\d{1,2}\\s*[Ss]$/.test(t) ||
                             cls.includes('dropdown') || cls.includes('popup') ||
@@ -571,54 +570,90 @@ class KaloclipBot:
         except Exception as e:
             self.log(f"  ⚠️ [A]: {e}")
 
-        # ===== Approach B: JS click .ant-select-content + dump dropdown HTML =====
-        self.log("  [B] JS click .ant-select-content + dump dropdown...")
+        # ===== Approach B: React __reactProps — เรียก onMouseDown handler โดยตรง =====
+        # เหตุผล: click .ant-select-content เพิ่ม ant-select-focused แต่ไม่เพิ่ม ant-select-open
+        # → React event handler ถูก bind ที่ level ต่างกัน ต้อง trigger via React internals
+        self.log("  [B] React __reactProps onMouseDown...")
         await page.keyboard.press("Escape")
         await page.wait_for_timeout(300)
 
         js_b = await page.evaluate("""
             () => {
-                // หา .ant-select-content ของ param-select
                 const paramSel = document.querySelector('.param-select');
                 if (!paramSel) return {err: 'no .param-select'};
-                const content = paramSel.querySelector('.ant-select-content');
-                if (!content) return {err: 'no .ant-select-content', paramHTML: paramSel.innerHTML.substring(0,300)};
 
-                // Click + dispatch events
-                content.dispatchEvent(new MouseEvent('mousedown', {bubbles:true, cancelable:true, view:window}));
-                content.dispatchEvent(new MouseEvent('mouseup',   {bubbles:true, cancelable:true, view:window}));
-                content.click();
-                return {clicked: content.className, paramHTML: paramSel.outerHTML.substring(0, 400)};
+                // ค้นหา __reactProps key
+                const reactKey = Object.keys(paramSel).find(k =>
+                    k.startsWith('__reactProps') || k.startsWith('__reactFiber') ||
+                    k.startsWith('__reactInternalInstance')
+                );
+                if (!reactKey) {
+                    // log element keys สำหรับ debug
+                    return {err: 'no reactKey', elKeys: Object.keys(paramSel).slice(0,10).join(',')};
+                }
+
+                const props = paramSel[reactKey];
+                const propsKeys = props ? Object.keys(props).join(',') : 'null';
+
+                // เรียก onMouseDown ถ้ามี
+                if (props && props.onMouseDown) {
+                    props.onMouseDown({
+                        preventDefault: ()=>{}, stopPropagation: ()=>{},
+                        target: paramSel, currentTarget: paramSel
+                    });
+                    return {result: 'called onMouseDown', propsKeys};
+                }
+                // เรียก onClick ถ้ามี
+                if (props && props.onClick) {
+                    props.onClick({
+                        preventDefault: ()=>{}, stopPropagation: ()=>{},
+                        target: paramSel, currentTarget: paramSel
+                    });
+                    return {result: 'called onClick', propsKeys};
+                }
+                return {err: 'no onMouseDown/onClick', propsKeys};
             }
         """)
-        self.log(f"  [B] JS: {str(js_b)[:300]}")
+        self.log(f"  [B] React props: {str(js_b)[:300]}")
         await page.wait_for_timeout(1500)
 
-        # Dump ALL body innerHTML ส่วนที่อาจเป็น dropdown
+        # Dump body children + inside param-select
         dropdown_html = await page.evaluate("""
             () => {
-                // หา dropdown container ที่ append ไปที่ body (Ant Design popup)
-                const bodyChildren = Array.from(document.body.children);
-                const popups = bodyChildren.filter(el =>
-                    el.className && (
-                        el.className.includes('dropdown') ||
-                        el.className.includes('popup') ||
-                        el.className.includes('ant-select') ||
-                        el.className.includes('overlay')
-                    ) && el.offsetParent !== null
-                );
-                return popups.map(el => ({
-                    cls: el.className.substring(0,80),
-                    html: el.innerHTML.substring(0,400)
-                }));
+                const result = {body: [], inside: []};
+                // Body level popups (Ant Design portal)
+                for (const el of document.body.children) {
+                    const cls = el.getAttribute('class') || '';
+                    if (cls.includes('dropdown') || cls.includes('popup') ||
+                        cls.includes('ant-select') || cls.includes('overlay')) {
+                        if (el.offsetParent !== null) {
+                            result.body.push({cls: cls.substring(0,80), html: el.innerHTML.substring(0,300)});
+                        }
+                    }
+                }
+                // Inside param-select (non-portal dropdown)
+                const paramSel = document.querySelector('.param-select');
+                if (paramSel) {
+                    for (const el of paramSel.querySelectorAll('*')) {
+                        const cls = el.getAttribute('class') || '';
+                        if (cls.includes('dropdown') || cls.includes('list') ||
+                            cls.includes('option') || cls.includes('popup')) {
+                            result.inside.push({cls: cls.substring(0,80), disp: window.getComputedStyle(el).display});
+                        }
+                    }
+                }
+                return result;
             }
         """)
-        self.log(f"  [B] dropdown popups: {str(dropdown_html)[:500]}")
+        self.log(f"  [B] dropdown: {str(dropdown_html)[:500]}")
 
-        new_els_b = await _dump_new_elements()
-        self.log(f"  [B] new elements: {new_els_b}")
+        try:
+            new_els_b = await _dump_new_elements()
+            self.log(f"  [B] new elements: {new_els_b}")
+        except Exception as e:
+            self.log(f"  [B] dump err: {e}")
 
-        # ลองคลิก option
+        # ลองคลิก option 20 S
         for opt in ["20 S", "20S", "20"]:
             for sel in [
                 f'[class*="select-item"]:has-text("{opt}")',
@@ -638,6 +673,49 @@ class KaloclipBot:
                             return True
                 except Exception:
                     continue
+
+        # ===== Approach D: React __reactFiber traverse → call onChange directly =====
+        # Bypass UI ทั้งหมด — เรียก onChange({value:'20', label:'20 S'}) โดยตรง
+        self.log("  [D] React fiber onChange...")
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(200)
+
+        js_d = await page.evaluate("""
+            () => {
+                const paramSel = document.querySelector('.param-select');
+                if (!paramSel) return {err: 'no .param-select'};
+
+                // หา React fiber
+                const fiberKey = Object.keys(paramSel).find(k =>
+                    k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance')
+                );
+                if (!fiberKey) return {err: 'no fiber', keys: Object.keys(paramSel).slice(0,10).join(',')};
+
+                // Traverse fiber tree หา Select component ที่มี onChange
+                let fiber = paramSel[fiberKey];
+                let attempts = 0;
+                while (fiber && attempts < 30) {
+                    const props = fiber.memoizedProps || fiber.pendingProps;
+                    if (props && typeof props.onChange === 'function' && props.options) {
+                        // เจอ Select component
+                        try {
+                            props.onChange('20', {value:'20', label:'20 S'});
+                            return {result: 'onChange called', opts: JSON.stringify(props.options).substring(0,200)};
+                        } catch(e) {
+                            return {err: 'onChange failed: ' + e.message};
+                        }
+                    }
+                    fiber = fiber.return;
+                    attempts++;
+                }
+                return {err: 'onChange not found after ' + attempts + ' traversals'};
+            }
+        """)
+        self.log(f"  [D] fiber: {str(js_d)[:300]}")
+        await page.wait_for_timeout(500)
+        if await _check_ok():
+            self.log("  ✅ [D] Duration = 20S via React onChange ✓")
+            return True
 
         # ===== Approach C: Keyboard navigation =====
         self.log("  [C] Keyboard navigation...")
