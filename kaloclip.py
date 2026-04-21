@@ -5,6 +5,7 @@ Kaloclip Bot — Playwright automation สำหรับ Kalodata
 
 import json
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from playwright.async_api import async_playwright
@@ -306,6 +307,20 @@ class KaloclipBot:
         except Exception as e:
             self.log(f"⚠️ screenshot error: {e}")
 
+        # ===== ตรวจว่าหน้าโหลดจริงๆ (ไม่ใช่แค่ spinner) =====
+        try:
+            body_check = await page.evaluate("document.body.innerText")
+            if not body_check or len(body_check.strip()) < 20:
+                # รอเพิ่มอีก 15s แล้วเช็คอีกรอบ
+                self.log("  ⚠️ หน้าดูเหมือนยังโหลดไม่เสร็จ (body ว่าง) — รอเพิ่ม 15s...")
+                await page.wait_for_timeout(15000)
+                body_check2 = await page.evaluate("document.body.innerText")
+                if not body_check2 or len(body_check2.strip()) < 20:
+                    raise Exception("❌ หน้า kalowave.com ไม่โหลด (spinner ค้าง) — อาจเป็นปัญหา auth/session")
+        except Exception as e:
+            self.log(f"  {e}")
+            raise
+
         # ===== STEP 1 (ตั้งค่าสินค้า) =====
         # Step 1 แสดงรูปสินค้า / drag-drop — ไม่มี checkbox
         # รอให้ product โหลดแล้วกด ถัดไป → Step 2
@@ -360,13 +375,13 @@ class KaloclipBot:
 
         # ===== STEP 3 (ตรวจสอบสคริปต์) =====
         # รอ script generate เสร็จ — ปุ่มจะเปลี่ยนจาก "กำลังโหลด..." → "สร้าง +10"
-        self.log("  [Step 3] รอ script generate เสร็จ (สูงสุด 5 นาที)...")
+        self.log("  [Step 3] รอ script generate เสร็จ (สูงสุด 90 วินาที)...")
         try:
             await page.wait_for_function(
                 # ปุ่ม generate จริงๆ คือ "สร้าง" (+ credit cost) ไม่ใช่ "สร้างวิดีโอ"
                 """() => Array.from(document.querySelectorAll('button'))
                     .some(b => b.textContent.trim().startsWith('สร้าง') && !b.disabled)""",
-                timeout=300_000
+                timeout=90_000
             )
             self.log("  ✅ Script โหลดเสร็จ — พบปุ่ม สร้าง")
         except Exception:
@@ -478,303 +493,281 @@ class KaloclipBot:
 
     async def _set_duration_step3(self, page):
         """ตั้ง duration = 20S ใน Step 3 bottom bar
-        Kaloclip ใช้ custom Ant Design — inner element = .ant-select-content (ไม่ใช่ .ant-select-selector)
+        Strategies (ลองตามลำดับ):
+          E1a — flushSync + fiber onChange (force sync React update)
+          E1b — direct useState hook queue.dispatch(20) ข้าม UI ทั้งหมด
+          E1c — class component setState
+          E3  — pointerdown event (Ant Design 5 ฟัง pointerdown ไม่ใช่ click)
+          E4  — rc-select onSelect API
+          F   — Keyboard Enter/Space + ArrowDown
         """
         self.log("  ⏱ ตั้ง duration = 20S...")
 
         # Helper: ตรวจว่าเปลี่ยนสำเร็จ
         async def _check_ok():
-            body = await page.evaluate("document.body.innerText")
-            return "20 S" in body
+            try:
+                body = await page.evaluate("document.body.innerText")
+                return "20 S" in body
+            except Exception:
+                return False
 
-        # Helper: dump visible elements — ใช้ getAttribute แทน .className เพื่อรองรับ SVG
-        async def _dump_new_elements():
-            return await page.evaluate("""
-                () => {
-                    const found = [];
-                    for (const el of document.querySelectorAll('*')) {
-                        if (el.offsetParent === null) continue;
-                        const t = el.textContent.trim();
-                        const cls = el.getAttribute('class') || '';  // ไม่ใช้ .className (SVG bug)
-                        if (
-                            /^\\d{1,2}\\s*[Ss]$/.test(t) ||
-                            cls.includes('dropdown') || cls.includes('popup') ||
-                            cls.includes('option') || cls.includes('select-item') ||
-                            cls.includes('param-') || cls.includes('select-list')
-                        ) {
-                            const rect = el.getBoundingClientRect();
-                            found.push({
-                                tag: el.tagName,
-                                text: t.substring(0, 20),
-                                cls: cls.substring(0, 80),
-                                x: Math.round(rect.x), y: Math.round(rect.y)
-                            });
-                        }
-                        if (found.length >= 30) break;
-                    }
-                    return found;
-                }
-            """)
-
-        # ===== Approach A: คลิก .ant-select-content บน duration .param-select โดยตรง =====
-        # Bottom bar มีหลาย .param-select: [9:16 ratio] [8S duration] [1080P quality]
-        # ต้องหา .param-select ที่มี text "8 S" เท่านั้น — ไม่ใช่ first match!
-        self.log("  [A] คลิก .ant-select-content บน duration dropdown...")
-
-        # หา duration .param-select ที่ถูกต้อง
+        # Helper: หา duration .param-select (text pattern \d+S)
         async def _find_duration_param():
             els = await page.locator('.param-select').all()
             for el in els:
                 try:
                     t = await el.inner_text()
-                    if '8 S' in t or '20 S' in t or ('S' in t and any(c.isdigit() for c in t)):
+                    if t.strip() in ['8 S', '12 S', '15 S', '20 S'] or \
+                       (any(c.isdigit() for c in t) and 'S' in t and ':' not in t and 'P' not in t):
                         return el
                 except Exception:
                     continue
             return None
 
+        # JS helper: หา duration .param-select element
+        FIND_DURATION_JS = """
+            const allParams = document.querySelectorAll('.param-select');
+            let paramSel = null;
+            for (const el of allParams) {
+                const t = el.textContent.trim();
+                if (/^\\d{1,2}\\s*S$/.test(t)) { paramSel = el; break; }
+            }
+        """
+
+        # ===== E1a: flushSync + fiber onChange (force sync React update) =====
+        self.log("  [E1a] flushSync + fiber onChange...")
+        js_e1a = await page.evaluate(f"""
+            () => {{
+                {FIND_DURATION_JS}
+                if (!paramSel) return {{err: 'no duration param', found: Array.from(allParams).map(e=>e.textContent.trim().substring(0,12)).join('|')}};
+
+                const fiberKey = Object.keys(paramSel).find(k => k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance'));
+                if (!fiberKey) return {{err: 'no fiber'}};
+
+                let fiber = paramSel[fiberKey];
+                let attempts = 0;
+                const log = [];
+                while (fiber && attempts < 40) {{
+                    attempts++;
+                    const props = fiber.memoizedProps || fiber.pendingProps;
+                    if (props && typeof props.onChange === 'function' && props.options) {{
+                        try {{
+                            // ลอง flushSync ก่อน (force sync re-render ใน React 18)
+                            const ReactDOM = window.ReactDOM || window.__ReactDOM;
+                            if (ReactDOM && ReactDOM.flushSync) {{
+                                ReactDOM.flushSync(() => props.onChange(20, {{value:20, label:'20 S'}}));
+                                log.push('flushSync+onChange@' + (fiber.type?.displayName||fiber.type?.name||fiber.tag));
+                            }} else {{
+                                props.onChange(20, {{value:20, label:'20 S'}});
+                                log.push('onChange@' + (fiber.type?.displayName||fiber.type?.name||fiber.tag));
+                            }}
+                        }} catch(e) {{ log.push('err:'+e.message); }}
+                    }}
+                    fiber = fiber.return;
+                }}
+                return {{log, attempts}};
+            }}
+        """)
+        self.log(f"  [E1a]: {str(js_e1a)[:300]}")
+        await page.wait_for_timeout(800)
+        if await _check_ok():
+            self.log("  ✅ [E1a] Duration = 20S ✓")
+            return True
+
+        # ===== E1b: direct useState hook queue.dispatch(20) =====
+        # Traverse hook chain หา node ที่เก็บ number ใน [8,12,15,20] → dispatch(20)
+        self.log("  [E1b] useState hook dispatch...")
+        js_e1b = await page.evaluate(f"""
+            () => {{
+                {FIND_DURATION_JS}
+                if (!paramSel) return {{err: 'no duration param'}};
+
+                const fiberKey = Object.keys(paramSel).find(k => k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance'));
+                if (!fiberKey) return {{err: 'no fiber'}};
+
+                const log = [];
+                let fiber = paramSel[fiberKey];
+                let fiberAttempts = 0;
+                while (fiber && fiberAttempts < 60) {{
+                    fiberAttempts++;
+                    const fName = fiber.type?.displayName || fiber.type?.name || String(fiber.tag);
+
+                    // --- E1b: scan hook chain ---
+                    let hookNode = fiber.memoizedState;
+                    let hookIdx = 0;
+                    while (hookNode && hookIdx < 20) {{
+                        hookIdx++;
+                        const val = hookNode.memoizedState;
+                        const dispatch = hookNode.queue?.dispatch;
+                        // hook ที่เก็บ duration value (integer: 8, 12, 15, 20)
+                        if (dispatch && typeof val === 'number' && [8,12,15,20].includes(val)) {{
+                            try {{
+                                dispatch(20);
+                                log.push('hook dispatch(' + val + '→20)@' + fName + '[h' + hookIdx + ']');
+                            }} catch(e) {{ log.push('dispatch-err:'+e.message); }}
+                        }}
+                        // hook ที่เก็บ object ที่มี duration/value field
+                        if (dispatch && val && typeof val === 'object') {{
+                            for (const k of ['duration','value','val','selected','current']) {{
+                                if ([8,12,15,20].includes(val[k])) {{
+                                    try {{
+                                        dispatch({{...val, [k]:20}});
+                                        log.push('hook dispatch obj('+k+'='+val[k]+'→20)@'+fName);
+                                    }} catch(e) {{}}
+                                }}
+                            }}
+                        }}
+                        hookNode = hookNode.next;
+                    }}
+
+                    // --- E1c: class component setState ---
+                    const inst = fiber.stateNode;
+                    if (inst && typeof inst === 'object' && inst.updater && inst.state) {{
+                        for (const k of Object.keys(inst.state)) {{
+                            if ([8,12,15,20].includes(inst.state[k])) {{
+                                try {{
+                                    inst.setState({{[k]:20}});
+                                    log.push('class setState('+k+'→20)@'+fName);
+                                }} catch(e) {{}}
+                            }}
+                        }}
+                    }}
+
+                    fiber = fiber.return;
+                }}
+                return {{log, fiberAttempts}};
+            }}
+        """)
+        self.log(f"  [E1b]: {str(js_e1b)[:400]}")
+        await page.wait_for_timeout(800)
+        if await _check_ok():
+            self.log("  ✅ [E1b] Duration = 20S ✓")
+            return True
+
+        # ===== E3: pointerdown event (Ant Design 5 ฟัง pointerdown ไม่ใช่ click) =====
+        self.log("  [E3] pointerdown → click duration dropdown...")
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(200)
         try:
-            duration_param = await _find_duration_param()
-            if duration_param:
-                inner = duration_param.locator('.ant-select-content').first
-                if await inner.is_visible(timeout=1000):
-                    await inner.scroll_into_view_if_needed()
-                    await inner.click()
-                    self.log("  🖱 [A] clicked duration .ant-select-content")
-                    await page.wait_for_timeout(1500)
+            duration_param_e3 = await _find_duration_param()
+            if duration_param_e3:
+                inner_e3 = duration_param_e3.locator('.ant-select-content').first
+                if await inner_e3.is_visible(timeout=1000):
+                    await inner_e3.scroll_into_view_if_needed()
+                    await page.wait_for_timeout(200)
+                    # Dispatch pointerdown → mousedown → mouseup → click ตามลำดับ
+                    for evt in ['pointerdown', 'mousedown', 'mouseup', 'click']:
+                        await inner_e3.dispatch_event(evt, {'bubbles': True, 'cancelable': True, 'button': 0})
+                        await page.wait_for_timeout(50)
+                    self.log("  🖱 [E3] dispatched pointerdown→click")
+                    await page.wait_for_timeout(1200)
 
-                    # Dump new elements
-                    new_els = await _dump_new_elements()
-                    self.log(f"  [A] new elements: {new_els}")
+                    # ตรวจ dropdown portal ที่ body
+                    dd_info = await page.evaluate("""
+                        () => {
+                            const dd = document.querySelector('.ant-select-dropdown:not(.ant-select-dropdown-hidden)');
+                            if (dd) return {open:true, items: Array.from(dd.querySelectorAll('.ant-select-item')).map(e=>e.textContent.trim()).join('|')};
+                            return {open:false};
+                        }
+                    """)
+                    self.log(f"  [E3] dropdown: {dd_info}")
 
-                    # ลองคลิก option 20 S ด้วยหลาย selectors
-                    for opt in ["20 S", "20S", "20"]:
-                        for sel in [
-                            f'.ant-select-item:has-text("{opt}")',
-                            f'.ant-select-content-item:has-text("{opt}")',
-                            f'[class*="option"]:has-text("{opt}")',
-                            f'[class*="item"]:has-text("{opt}")',
-                            f'[class*="select"]:has-text("{opt}")',
-                            f'li:has-text("{opt}")',
-                        ]:
+                    if dd_info.get('open'):
+                        for opt in ['20 S', '20S']:
                             try:
-                                el = page.locator(sel).first
-                                if await el.is_visible(timeout=400):
-                                    await el.click()
-                                    self.log(f"  ✅ [A] selected '{opt}' via {sel.split(':')[0]}")
+                                opt_el = page.locator(f'.ant-select-dropdown:visible .ant-select-item:has-text("{opt}")').first
+                                if await opt_el.is_visible(timeout=500):
+                                    await opt_el.click()
+                                    self.log(f"  ✅ [E3] selected '{opt}'")
                                     await page.wait_for_timeout(500)
                                     if await _check_ok():
                                         return True
                             except Exception:
                                 continue
-
-                    # ลอง get_by_text exact
-                    for opt in ["20 S", "20S"]:
-                        try:
-                            el = page.get_by_text(opt, exact=True).first
-                            if await el.is_visible(timeout=400):
-                                await el.click()
-                                self.log(f"  ✅ [A] get_by_text '{opt}'")
-                                await page.wait_for_timeout(500)
-                                if await _check_ok():
-                                    return True
-                        except Exception:
-                            continue
         except Exception as e:
-            self.log(f"  ⚠️ [A]: {e}")
+            self.log(f"  ⚠️ [E3]: {e}")
 
-        # ===== Approach B: React __reactProps — เรียก onMouseDown handler โดยตรง =====
-        self.log("  [B] React __reactProps onMouseDown...")
-        await page.keyboard.press("Escape")
-        await page.wait_for_timeout(300)
+        # ===== E4: rc-select onSelect API =====
+        self.log("  [E4] rc-select onSelect...")
+        js_e4 = await page.evaluate(f"""
+            () => {{
+                {FIND_DURATION_JS}
+                if (!paramSel) return {{err: 'no param'}};
 
-        js_b = await page.evaluate("""
-            () => {
-                // หา .param-select ที่มี "8 S" (duration) ไม่ใช่ 9:16 (ratio)
-                const allParams = document.querySelectorAll('.param-select');
-                let paramSel = null;
-                for (const el of allParams) {
-                    const t = el.textContent.trim();
-                    if (/^\\d{1,2}\\s*S$/.test(t) || t === '8 S' || t === '20 S') {
-                        paramSel = el; break;
-                    }
-                }
-                if (!paramSel) return {err: 'no duration .param-select', found: Array.from(allParams).map(e=>e.textContent.trim().substring(0,10)).join(',')};
-
-                // ค้นหา __reactProps key
-                const reactKey = Object.keys(paramSel).find(k =>
-                    k.startsWith('__reactProps') || k.startsWith('__reactFiber') ||
-                    k.startsWith('__reactInternalInstance')
-                );
-                if (!reactKey) {
-                    // log element keys สำหรับ debug
-                    return {err: 'no reactKey', elKeys: Object.keys(paramSel).slice(0,10).join(',')};
-                }
-
-                const props = paramSel[reactKey];
-                const propsKeys = props ? Object.keys(props).join(',') : 'null';
-
-                // เรียก onMouseDown ถ้ามี
-                if (props && props.onMouseDown) {
-                    props.onMouseDown({
-                        preventDefault: ()=>{}, stopPropagation: ()=>{},
-                        target: paramSel, currentTarget: paramSel
-                    });
-                    return {result: 'called onMouseDown', propsKeys};
-                }
-                // เรียก onClick ถ้ามี
-                if (props && props.onClick) {
-                    props.onClick({
-                        preventDefault: ()=>{}, stopPropagation: ()=>{},
-                        target: paramSel, currentTarget: paramSel
-                    });
-                    return {result: 'called onClick', propsKeys};
-                }
-                return {err: 'no onMouseDown/onClick', propsKeys};
-            }
-        """)
-        self.log(f"  [B] React props: {str(js_b)[:300]}")
-        await page.wait_for_timeout(1500)
-
-        # Dump body children + inside param-select
-        dropdown_html = await page.evaluate("""
-            () => {
-                const result = {body: [], inside: []};
-                // Body level popups (Ant Design portal)
-                for (const el of document.body.children) {
-                    const cls = el.getAttribute('class') || '';
-                    if (cls.includes('dropdown') || cls.includes('popup') ||
-                        cls.includes('ant-select') || cls.includes('overlay')) {
-                        if (el.offsetParent !== null) {
-                            result.body.push({cls: cls.substring(0,80), html: el.innerHTML.substring(0,300)});
-                        }
-                    }
-                }
-                // Inside param-select (non-portal dropdown)
-                const paramSel = document.querySelector('.param-select');
-                if (paramSel) {
-                    for (const el of paramSel.querySelectorAll('*')) {
-                        const cls = el.getAttribute('class') || '';
-                        if (cls.includes('dropdown') || cls.includes('list') ||
-                            cls.includes('option') || cls.includes('popup')) {
-                            result.inside.push({cls: cls.substring(0,80), disp: window.getComputedStyle(el).display});
-                        }
-                    }
-                }
-                return result;
-            }
-        """)
-        self.log(f"  [B] dropdown: {str(dropdown_html)[:500]}")
-
-        try:
-            new_els_b = await _dump_new_elements()
-            self.log(f"  [B] new elements: {new_els_b}")
-        except Exception as e:
-            self.log(f"  [B] dump err: {e}")
-
-        # ลองคลิก option 20 S
-        for opt in ["20 S", "20S", "20"]:
-            for sel in [
-                f'[class*="select-item"]:has-text("{opt}")',
-                f'[class*="option"]:has-text("{opt}")',
-                f'[class*="item"]:has-text("{opt}")',
-                f'li:has-text("{opt}")',
-                f'[role="option"]:has-text("{opt}")',
-                f'text="{opt}"',
-            ]:
-                try:
-                    el = page.locator(sel).first
-                    if await el.is_visible(timeout=400):
-                        await el.click()
-                        self.log(f"  ✅ [B] '{opt}' via {sel.split(':')[0]}")
-                        await page.wait_for_timeout(500)
-                        if await _check_ok():
-                            return True
-                except Exception:
-                    continue
-
-        # ===== Approach D: React fiber → onChange บน duration dropdown โดยตรง =====
-        self.log("  [D] React fiber onChange on duration...")
-        await page.keyboard.press("Escape")
-        await page.wait_for_timeout(200)
-
-        js_d = await page.evaluate("""
-            () => {
-                // หา duration .param-select (text = "8 S" หรือ pattern \\d+S)
-                const allParams = document.querySelectorAll('.param-select');
-                let paramSel = null;
-                for (const el of allParams) {
-                    const t = el.textContent.trim();
-                    if (/^\\d{1,2}\\s*S$/.test(t) || t === '8 S' || t === '20 S') {
-                        paramSel = el; break;
-                    }
-                }
-                if (!paramSel) return {err: 'no duration .param-select'};
-
-                // หา React fiber
-                const fiberKey = Object.keys(paramSel).find(k =>
-                    k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance')
-                );
-                if (!fiberKey) return {err: 'no fiber', keys: Object.keys(paramSel).slice(0,10).join(',')};
-
-                // Traverse fiber tree หา Select component ที่มี onChange
+                const fiberKey = Object.keys(paramSel).find(k => k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance'));
+                if (!fiberKey) return {{err:'no fiber'}};
                 let fiber = paramSel[fiberKey];
-                let attempts = 0;
-                while (fiber && attempts < 30) {
-                    const props = fiber.memoizedProps || fiber.pendingProps;
-                    if (props && typeof props.onChange === 'function' && props.options) {
-                        // เจอ Select component
-                        try {
-                            props.onChange(20, {value:20, label:'20 S'});
-                            return {result: 'onChange called', opts: JSON.stringify(props.options).substring(0,200)};
-                        } catch(e) {
-                            return {err: 'onChange failed: ' + e.message};
-                        }
-                    }
+                const names = [];
+                for (let i = 0; i < 50 && fiber; i++) {{
+                    const n = fiber.type?.displayName || fiber.type?.name;
+                    if (n) names.push(n);
+                    const props = fiber.memoizedProps;
+                    if (props && typeof props.onSelect === 'function') {{
+                        try {{
+                            props.onSelect(20, {{value:20, label:'20 S'}});
+                            return {{result:'onSelect@'+n}};
+                        }} catch(e) {{ return {{err:'onSelect err:'+e.message}}; }}
+                    }}
+                    // ลอง __reactProps on content element
+                    const content = paramSel.querySelector('.ant-select-content');
+                    if (content) {{
+                        const pk = Object.keys(content).find(k => k.startsWith('__reactProps'));
+                        if (pk) {{
+                            const cp = content[pk];
+                            if (cp && cp.onClick) {{
+                                try {{
+                                    cp.onClick({{preventDefault:()=>{{}}, stopPropagation:()=>{{}}, target:content, currentTarget:content}});
+                                    return {{result:'content onClick via __reactProps'}};
+                                }} catch(e) {{}}
+                            }}
+                        }}
+                    }}
                     fiber = fiber.return;
-                    attempts++;
-                }
-                return {err: 'onChange not found after ' + attempts + ' traversals'};
-            }
+                }}
+                return {{names: names.join(','), tried: 'onSelect not found'}};
+            }}
         """)
-        self.log(f"  [D] fiber: {str(js_d)[:300]}")
-        await page.wait_for_timeout(1000)  # รอ React re-render
+        self.log(f"  [E4]: {str(js_e4)[:300]}")
+        await page.wait_for_timeout(500)
         if await _check_ok():
-            self.log("  ✅ [D] Duration = 20S via React onChange ✓")
+            self.log("  ✅ [E4] Duration = 20S ✓")
             return True
-        # log body snippet เพื่อ debug ว่า DOM เปลี่ยนหรือยัง
-        body_d = await page.evaluate("document.body.innerText")
-        self.log(f"  [D] body after onChange: {'20 S' in body_d} | snippet: {body_d[body_d.find('8 S')-10:body_d.find('8 S')+20] if '8 S' in body_d else body_d[:100]}")
 
-        # ===== Approach C: Keyboard navigation บน duration dropdown =====
-        self.log("  [C] Keyboard navigation on duration...")
+        # ===== F: Keyboard — Enter + Space + ArrowDown =====
+        self.log("  [F] Keyboard navigation...")
         await page.keyboard.press("Escape")
         await page.wait_for_timeout(200)
         try:
-            # Focus .ant-select-content ของ duration param-select เท่านั้น
-            duration_param_c = await _find_duration_param()
-            if not duration_param_c:
-                raise Exception("no duration param")
-            param_loc = duration_param_c.locator('.ant-select-content').first
-            if await param_loc.is_visible(timeout=1000):
-                await param_loc.focus()
-                await page.wait_for_timeout(300)
-                await page.keyboard.press("Space")
-                await page.wait_for_timeout(800)
-                opts_c = await _dump_new_elements()
-                self.log(f"  [C] after Space: {opts_c}")
-
-                # ลอง ArrowDown หลายครั้ง
-                for _ in range(5):
-                    await page.keyboard.press("ArrowDown")
-                    await page.wait_for_timeout(200)
-                    if await _check_ok():
-                        await page.keyboard.press("Enter")
-                        self.log("  ✅ [C] Duration = 20S via keyboard")
-                        return True
-                await page.keyboard.press("Escape")
+            duration_param_f = await _find_duration_param()
+            if duration_param_f:
+                inner_f = duration_param_f.locator('.ant-select-content').first
+                if await inner_f.is_visible(timeout=1000):
+                    await inner_f.scroll_into_view_if_needed()
+                    await inner_f.focus()
+                    await page.wait_for_timeout(300)
+                    for open_key in ['Enter', 'Space', 'ArrowDown']:
+                        await page.keyboard.press(open_key)
+                        await page.wait_for_timeout(600)
+                        dd_open = await page.evaluate("""
+                            () => !!document.querySelector('.ant-select-dropdown:not(.ant-select-dropdown-hidden)')
+                        """)
+                        if dd_open:
+                            self.log(f"  🔓 [F] dropdown opened via {open_key}")
+                            for _ in range(8):
+                                await page.keyboard.press('ArrowDown')
+                                await page.wait_for_timeout(150)
+                                focused_text = await page.evaluate("() => document.activeElement?.textContent?.trim() || ''")
+                                if '20' in focused_text:
+                                    await page.keyboard.press('Enter')
+                                    await page.wait_for_timeout(500)
+                                    if await _check_ok():
+                                        self.log("  ✅ [F] Duration = 20S via keyboard")
+                                        return True
+                                    break
+                            await page.keyboard.press('Escape')
+                            break
         except Exception as e:
-            self.log(f"  ⚠️ [C]: {e}")
+            self.log(f"  ⚠️ [F]: {e}")
 
         # --- Final check ---
         if await _check_ok():
