@@ -725,7 +725,7 @@ class KaloclipBot:
                     if (props && typeof props.onChange === 'function' && props.options) {
                         // เจอ Select component
                         try {
-                            props.onChange('20', {value:'20', label:'20 S'});
+                            props.onChange(20, {value:20, label:'20 S'});
                             return {result: 'onChange called', opts: JSON.stringify(props.options).substring(0,200)};
                         } catch(e) {
                             return {err: 'onChange failed: ' + e.message};
@@ -738,10 +738,13 @@ class KaloclipBot:
             }
         """)
         self.log(f"  [D] fiber: {str(js_d)[:300]}")
-        await page.wait_for_timeout(500)
+        await page.wait_for_timeout(1000)  # รอ React re-render
         if await _check_ok():
             self.log("  ✅ [D] Duration = 20S via React onChange ✓")
             return True
+        # log body snippet เพื่อ debug ว่า DOM เปลี่ยนหรือยัง
+        body_d = await page.evaluate("document.body.innerText")
+        self.log(f"  [D] body after onChange: {'20 S' in body_d} | snippet: {body_d[body_d.find('8 S')-10:body_d.find('8 S')+20] if '8 S' in body_d else body_d[:100]}")
 
         # ===== Approach C: Keyboard navigation บน duration dropdown =====
         self.log("  [C] Keyboard navigation on duration...")
