@@ -1072,16 +1072,18 @@ class KaloclipBot:
                 self.log(f"  ⚠️ snap {name}: {e}")
                 return ""
 
-        # Helper: try download click — รองรับ quality picker + network capture
+        # Helper: try download click
+        # กลไก download ของ Kalowave = window.open(url) → new tab
+        # ต้องดัก popup page ไม่ใช่ browser download event
         async def _try_download(btn):
             import urllib.request as _urlreq
+            import asyncio as _asyncio
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             safe_name = "".join(c for c in product["name"][:20] if c.isalnum() or c in "- _")
             save_path = os.path.join(self.output_dir, f"{timestamp}_{safe_name}.mp4")
 
-            # Network capture: เก็บ URL วิดีโอจาก response headers / JSON body
+            # Network capture
             captured_video_urls = []
-
             async def _on_resp(resp):
                 try:
                     url = resp.url
@@ -1103,8 +1105,8 @@ class KaloclipBot:
             page.on("response", _on_resp)
 
             async def _save_from_url(url):
-                """ดาวน์โหลดผ่าน urllib แล้ว verify ขนาด"""
                 try:
+                    self.log(f"  ⬇️ ดาวน์โหลด: {url[:100]}")
                     req = _urlreq.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
                     with _urlreq.urlopen(req, timeout=120) as r, open(save_path, 'wb') as f:
                         f.write(r.read())
@@ -1117,100 +1119,188 @@ class KaloclipBot:
                     self.log(f"  ⚠️ urllib: {eu}")
                 return None
 
-            try:
-                # ── Step 1: คลิกปุ่มแล้วรอ browser download 8 วิ ──────────────────
-                self.log("  🖱 คลิก ดาวน์โหลด...")
+            # Intercept window.open ผ่าน JS (ก่อนคลิกใดๆ)
+            async def _inject_open_intercept():
+                try:
+                    await page.evaluate("""
+                        () => {
+                            if (!window.__kalo_opened) {
+                                window.__kalo_opened = [];
+                                const orig = window.open;
+                                window.open = function(url, ...a) {
+                                    if (url) window.__kalo_opened.push(String(url));
+                                    return orig.apply(this, [url, ...a]);
+                                };
+                            }
+                        }
+                    """)
+                except Exception:
+                    pass
+
+            async def _get_opened_urls():
+                try:
+                    return await page.evaluate("() => window.__kalo_opened || []")
+                except Exception:
+                    return []
+
+            # ── helper: คลิก el แล้วรอ popup/download/window.open (timeout วิ) ──
+            async def _click_and_capture(el, label="btn", timeout_s=15):
+                await _inject_open_intercept()
+                # reset window.open list
+                try:
+                    await page.evaluate("() => { window.__kalo_opened = []; }")
+                except Exception:
+                    pass
+
+                # ตั้ง popup listener ก่อนคลิก
+                popup_fut = None
+                try:
+                    popup_fut = page.context.wait_for_event("page", timeout=timeout_s * 1000)
+                except Exception:
+                    pass
+
+                # ลองรอ browser download ด้วย (fast path)
+                dl_result = None
                 try:
                     async with page.expect_download(timeout=8_000) as dl_info:
-                        await btn.click()
+                        await el.click()
+                        self.log(f"  🖱 คลิก {label}")
                     dl = await dl_info.value
                     await dl.save_as(save_path)
                     sz = os.path.getsize(save_path) if os.path.exists(save_path) else 0
                     if sz > 10_000:
-                        self.log(f"  ✅ บันทึก ({sz // 1024}KB): {os.path.basename(save_path)}")
+                        self.log(f"  ✅ browser download ({sz//1024}KB)")
                         return save_path
                 except Exception:
-                    pass  # ไม่มี immediate download → ดูว่ามี quality picker ไหม
+                    # ไม่มี browser download ภายใน 8s → เช็ค popup
+                    pass
 
-                # ── Step 2: Screenshot + log หลัง click ──────────────────────────
-                await page.wait_for_timeout(1_500)
+                await page.wait_for_timeout(2_000)
+
+                # เช็ค window.open
+                opened = await _get_opened_urls()
+                self.log(f"  🪟 window.open: {opened}")
+                for url in opened:
+                    if url and url.startswith('http'):
+                        r = await _save_from_url(url)
+                        if r:
+                            return r
+
+                # เช็ค popup (new tab)
+                if popup_fut:
+                    try:
+                        new_page = await _asyncio.wait_for(
+                            _asyncio.ensure_future(popup_fut), timeout=timeout_s
+                        )
+                        popup_url = new_page.url
+                        self.log(f"  🔗 popup URL: {popup_url[:120]}")
+                        try:
+                            await new_page.close()
+                        except Exception:
+                            pass
+                        if popup_url and popup_url not in ('about:blank', ''):
+                            r = await _save_from_url(popup_url)
+                            if r:
+                                return r
+                    except Exception:
+                        pass
+
+                # เช็ค network capture
+                unique = list(dict.fromkeys(captured_video_urls))
+                self.log(f"  📡 network: {len(unique)} URLs → {unique[:2]}")
+                for url in reversed(unique):
+                    r = await _save_from_url(url)
+                    if r:
+                        return r
+
+                return None
+
+            try:
+                # ── PHASE A: คลิก "ดาวน์โหลด" ครั้งแรก ──────────────────────────
+                self.log("  🖱 Phase A: คลิก ดาวน์โหลด ครั้งแรก...")
+                result = await _click_and_capture(btn, "ดาวน์โหลด(1)")
+                if result:
+                    return result
+
+                # ── Screenshot หลัง click ──────────────────────────────────────
+                await page.wait_for_timeout(1_000)
                 try:
                     await page.screenshot(path=os.path.join(self.output_dir, "debug_dl_click.png"))
-                    items = await page.evaluate("""
+                    # Log ทุก element ที่ visible พร้อม class (เพื่อ debug)
+                    items_info = await page.evaluate("""
                         () => Array.from(document.querySelectorAll(
-                            'button,a,li,[role="menuitem"],[role="option"],[class*="dropdown-menu-item"]'
+                            'button,a,li,[role="menuitem"],[role="option"]'
                         ))
                         .filter(e => e.offsetParent !== null && e.textContent.trim())
-                        .map(e => e.textContent.trim().substring(0, 35))
+                        .map(e => {
+                            const cls = (e.className || '').substring(0, 30);
+                            const txt = e.textContent.trim().substring(0, 30);
+                            return txt + '(' + cls + ')';
+                        })
                         .join(' | ')
                     """)
-                    self.log(f"  📸 dl_click | items: {items[:500]}")
+                    self.log(f"  📸 after_dl1 | {items_info[:600]}")
                 except Exception:
                     pass
 
-                # ── Step 3: หา quality picker / modal ────────────────────────────
-                quality_sels = [
-                    'li:has-text("1080")', '[role="menuitem"]:has-text("1080")',
-                    '[role="option"]:has-text("1080")', 'button:has-text("1080")',
-                    'a:has-text("1080")', '[class*="item"]:has-text("1080")',
-                    'li:has-text("720")', '[role="menuitem"]:has-text("720")',
-                    'button:has-text("720")', 'a:has-text("720")',
-                    '[class*="item"]:has-text("720")',
-                    'a[download]', 'a[href*=".mp4"]',
-                    '.ant-dropdown-menu-item', '.ant-menu-item',
-                    '.ant-modal button:has-text("ดาวน์โหลด")',
-                    '.ant-modal-footer button:last-child',
-                    '[role="dialog"] button:last-child',
+                # ── PHASE B: คลิก element ที่ปรากฏใหม่หลัง phase A ──────────────
+                # ลำดับลอง: exact "ดาวน์โหลด" text (ครั้งที่ 2), quality 1080/720 ใน menu
+                phase_b_sels = [
+                    ('button:has-text("ดาวน์โหลด")', 'ดาวน์โหลด(2nd btn)'),
+                    ('a:has-text("ดาวน์โหลด")', 'ดาวน์โหลด(2nd link)'),
+                    ('[role="menuitem"]:has-text("ดาวน์โหลด")', 'ดาวน์โหลด(menuitem)'),
+                    ('[role="menuitem"]:has-text("1080")', '1080(menuitem)'),
+                    ('[role="menuitem"]:has-text("720")', '720(menuitem)'),
+                    ('li:has-text("1080")', '1080(li)'),
+                    ('li:has-text("720")', '720(li)'),
+                    ('button:has-text("1080")', '1080(btn)'),
+                    ('button:has-text("720")', '720(btn)'),
+                    ('a[download]', 'a[download]'),
+                    ('a[href*=".mp4"]', 'a[href*.mp4]'),
+                    # Ant Design dropdown items (exact class)
+                    ('.ant-dropdown-menu-item:has-text("ดาวน์โหลด")', 'ant-dl'),
+                    ('.ant-dropdown-menu-item:has-text("1080")', 'ant-1080'),
+                    ('.ant-dropdown-menu-item:has-text("720")', 'ant-720'),
+                    ('.ant-dropdown-menu-item', 'ant-menu-item(any)'),
                 ]
-                for q_sel in quality_sels:
+                for sel, label in phase_b_sels:
                     try:
-                        el = page.locator(q_sel).first
-                        if not await el.is_visible(timeout=600):
+                        els = page.locator(sel)
+                        cnt = await els.count()
+                        if cnt == 0:
                             continue
 
+                        # ถ้า "ดาวน์โหลด" มีหลายตัว → ใช้ตัวสุดท้าย (ใหม่ที่สุด)
+                        el = els.last if cnt > 1 else els.first
+                        if not await el.is_visible(timeout=500):
+                            continue
+
+                        # check href ก่อน
                         href = None
                         try:
                             href = await el.get_attribute('href')
                         except Exception:
                             pass
-
-                        if href and ('.mp4' in href.lower() or 'download' in href.lower()):
-                            self.log(f"  🔗 direct href: {href[:120]}")
+                        if href and href.startswith('http'):
+                            self.log(f"  🔗 href: {href[:100]}")
                             r = await _save_from_url(href)
                             if r:
                                 return r
 
-                        self.log(f"  → คลิก quality: {q_sel}")
-                        try:
-                            async with page.expect_download(timeout=90_000) as dl_info2:
-                                await el.click()
-                            dl2 = await dl_info2.value
-                            await dl2.save_as(save_path)
-                            sz = os.path.getsize(save_path) if os.path.exists(save_path) else 0
-                            if sz > 10_000:
-                                self.log(f"  ✅ บันทึก ({sz // 1024}KB): {os.path.basename(save_path)}")
-                                return save_path
-                        except Exception as e2:
-                            self.log(f"  ⚠️ quality dl: {e2}")
+                        result = await _click_and_capture(el, label)
+                        if result:
+                            return result
+                        # ถ้าคลิกแล้วไม่ได้ → break ออกจาก loop (ไม่ลอง selector อื่น)
                         break
                     except Exception:
                         continue
 
-                # ── Step 4: ใช้ URL ที่ capture จาก network ──────────────────────
-                await page.wait_for_timeout(3_000)
-                unique_urls = list(dict.fromkeys(captured_video_urls))
-                self.log(f"  📡 captured {len(unique_urls)} URLs: {unique_urls[:3]}")
-                for url in reversed(unique_urls):
-                    r = await _save_from_url(url)
-                    if r:
-                        return r
-
-                # ── Step 5: หา URL จาก DOM ───────────────────────────────────────
+                # ── PHASE C: scan DOM หา video URL ───────────────────────────────
                 dom_url = await page.evaluate("""
                     () => {
-                        for (const a of document.querySelectorAll('a[href],[data-url],[data-src]')) {
-                            const url = a.href || a.getAttribute('data-url') || a.getAttribute('data-src') || '';
-                            if (url.includes('.mp4') || url.includes('video') || url.includes('download')) return url;
+                        for (const a of document.querySelectorAll('a[href],[data-url],[data-src],source[src],video[src]')) {
+                            const url = a.href || a.src || a.getAttribute('data-url') || a.getAttribute('data-src') || a.getAttribute('src') || '';
+                            if (url.startsWith('http') && (url.includes('.mp4') || url.includes('/video/') || url.includes('download'))) return url;
                         }
                         return null;
                     }
