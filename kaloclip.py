@@ -178,6 +178,11 @@ class KaloclipBot:
 
                 self.log(f"✅ เสร็จ! เหลืออีก {TOP_N - state['index']} สินค้าในรอบนี้")
 
+                # โพส TikTok (ถ้ามี token)
+                tiktok_url = ""
+                if filepath:
+                    tiktok_url = await self._post_to_tiktok(filepath, product.get("name", ""))
+
                 # แจ้ง Telegram
                 from notify import send_message, send_video
                 msg = (f"🎬 <b>Kaloclip Auto</b>\n"
@@ -185,6 +190,8 @@ class KaloclipBot:
                        f"📦 สินค้า: {product['name'][:50]}\n"
                        f"📋 รอบนี้: {state['index']}/{TOP_N}\n"
                        f"🕐 {state['last_run']}")
+                if tiktok_url:
+                    msg += f"\n🎵 TikTok: {tiktok_url}"
                 if filepath:
                     await send_video(filepath, caption=msg)
                 else:
@@ -1509,3 +1516,90 @@ class KaloclipBot:
 
         self.log("⚠️ ไม่พบปุ่ม ดาวน์โหลด — ดู screenshot debug_detail_view")
         return None
+
+    # ===== TikTok Auto-Post =====
+
+    async def _post_to_tiktok(self, video_path: str, product_name: str) -> str:
+        """Upload วิดีโอไปยัง TikTok Inbox (ผู้ใช้ edit & post เอง)
+        คืนค่า publish_id ถ้าสำเร็จ, "" ถ้าข้าม
+        """
+        import httpx
+
+        # โหลด token file
+        token_file = os.path.join(os.path.dirname(self.state_file), "tiktok_token.json")
+        if not os.path.exists(token_file):
+            self.log("⏭ TikTok: ยังไม่ได้ connect — ข้าม (ไปที่ /tiktok-auth เพื่อเชื่อมต่อ)")
+            return ""
+
+        with open(token_file) as f:
+            token_data = json.load(f)
+
+        access_token = token_data.get("access_token", "")
+        if not access_token:
+            self.log("⚠️ TikTok token ว่าง — ข้าม")
+            return ""
+
+        if not video_path or not os.path.exists(video_path):
+            self.log(f"⚠️ TikTok: ไม่พบไฟล์ {video_path} — ข้าม")
+            return ""
+
+        file_size = os.path.getsize(video_path)
+        title = f"สินค้าน่าซื้อ! {product_name[:80]} 🛍️ #TikTokShop #affiliate"
+
+        self.log(f"📤 TikTok: กำลัง upload {os.path.basename(video_path)} ({file_size//1024}KB)...")
+
+        try:
+            # Step 1: Init upload (inbox = draft ให้ user publish เอง)
+            init_resp = httpx.post(
+                "https://open.tiktokapis.com/v2/post/publish/inbox/video/init/",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json; charset=UTF-8",
+                },
+                json={
+                    "source_info": {
+                        "source": "FILE_UPLOAD",
+                        "video_size": file_size,
+                        "chunk_size": file_size,
+                        "total_chunk_count": 1,
+                    }
+                },
+                timeout=30,
+            )
+            init_data = init_resp.json()
+            self.log(f"  TikTok init: {str(init_data)[:200]}")
+
+            err = init_data.get("error", {})
+            if err.get("code", "ok") != "ok":
+                self.log(f"❌ TikTok init error: {err}")
+                return ""
+
+            publish_id = init_data["data"]["publish_id"]
+            upload_url = init_data["data"]["upload_url"]
+
+            # Step 2: Upload file chunk
+            with open(video_path, "rb") as f:
+                video_bytes = f.read()
+
+            upload_resp = httpx.put(
+                upload_url,
+                content=video_bytes,
+                headers={
+                    "Content-Type": "video/mp4",
+                    "Content-Range": f"bytes 0-{file_size - 1}/{file_size}",
+                    "Content-Length": str(file_size),
+                },
+                timeout=180,
+            )
+            self.log(f"  TikTok upload status: {upload_resp.status_code}")
+
+            if upload_resp.status_code not in [200, 201, 204, 206]:
+                self.log(f"❌ TikTok upload failed: {upload_resp.status_code} {upload_resp.text[:200]}")
+                return ""
+
+            self.log(f"✅ TikTok: upload สำเร็จ! publish_id={publish_id} (บันทึกเป็น draft)")
+            return publish_id
+
+        except Exception as e:
+            self.log(f"❌ TikTok post error: {e}")
+            return ""

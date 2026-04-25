@@ -27,6 +27,7 @@ STATE_FILE = "/data/state.json"
 COOKIES_FILE = "/data/session_cookies.json"
 LOG_FILE = "/data/run.log"
 OUTPUT_DIR = "/data/downloads"
+TIKTOK_TOKEN_FILE = "/data/tiktok_token.json"
 
 # ใช้ local path ถ้าไม่มี /data (dev mode)
 if not os.path.exists("/data"):
@@ -34,6 +35,15 @@ if not os.path.exists("/data"):
     COOKIES_FILE = "data/session_cookies.json"
     LOG_FILE = "data/run.log"
     OUTPUT_DIR = "data/downloads"
+    TIKTOK_TOKEN_FILE = "data/tiktok_token.json"
+
+# TikTok OAuth config
+TIKTOK_CLIENT_KEY = os.environ.get("TIKTOK_CLIENT_KEY", "sbaw0vzwdnmbsq4cm8")
+TIKTOK_CLIENT_SECRET = os.environ.get("TIKTOK_CLIENT_SECRET", "blEY0aF1bTwOizgtVY6Jk0HmjeaA2vAh")
+TIKTOK_REDIRECT_URI = os.environ.get(
+    "TIKTOK_REDIRECT_URI",
+    "https://kaloclip-auto-production.up.railway.app/tiktok-callback"
+)
 
 for d in [os.path.dirname(STATE_FILE), OUTPUT_DIR]:
     Path(d).mkdir(parents=True, exist_ok=True)
@@ -162,6 +172,92 @@ def set_index():
     product_num = int(idx) + 1
     append_log(f"✅ ตั้ง index เป็น {idx} (สินค้า #{product_num})")
     return jsonify({"ok": True, "msg": f"จะเริ่มจากสินค้า #{product_num} ในรอบถัดไป"})
+
+
+# ===== TikTok OAuth =====
+
+@app.route("/tiktok-auth")
+def tiktok_auth():
+    import secrets, urllib.parse
+    state = secrets.token_urlsafe(16)
+    params = urllib.parse.urlencode({
+        "client_key": TIKTOK_CLIENT_KEY,
+        "response_type": "code",
+        "scope": "video.upload,video.publish",
+        "redirect_uri": TIKTOK_REDIRECT_URI,
+        "state": state,
+    })
+    auth_url = f"https://www.tiktok.com/v2/auth/authorize/?{params}"
+    append_log(f"🔑 เริ่ม TikTok OAuth...")
+    return redirect(auth_url)
+
+
+@app.route("/tiktok-callback")
+def tiktok_callback():
+    code = request.args.get("code")
+    error = request.args.get("error")
+    if error:
+        append_log(f"❌ TikTok OAuth error: {error}")
+        return redirect("/?msg=tiktok_error")
+    if not code:
+        return "ไม่ได้รับ code จาก TikTok", 400
+
+    # Exchange code → access_token
+    import httpx
+    try:
+        resp = httpx.post(
+            "https://open.tiktokapis.com/v2/oauth/token/",
+            data={
+                "client_key": TIKTOK_CLIENT_KEY,
+                "client_secret": TIKTOK_CLIENT_SECRET,
+                "code": code,
+                "grant_type": "authorization_code",
+                "redirect_uri": TIKTOK_REDIRECT_URI,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=15,
+        )
+        data = resp.json()
+    except Exception as e:
+        append_log(f"❌ TikTok token exchange error: {e}")
+        return redirect("/?msg=tiktok_error")
+
+    if "access_token" in data:
+        token_data = {
+            "access_token": data["access_token"],
+            "refresh_token": data.get("refresh_token", ""),
+            "open_id": data.get("open_id", ""),
+            "expires_in": data.get("expires_in", 0),
+            "refresh_expires_in": data.get("refresh_expires_in", 0),
+            "scope": data.get("scope", ""),
+            "saved_at": datetime.now().isoformat(),
+        }
+        os.makedirs(os.path.dirname(TIKTOK_TOKEN_FILE), exist_ok=True)
+        with open(TIKTOK_TOKEN_FILE, "w") as f:
+            json.dump(token_data, f, indent=2)
+        append_log(f"✅ TikTok auth สำเร็จ! scope={token_data['scope']}")
+        return redirect("/?msg=tiktok_ok")
+    else:
+        append_log(f"❌ TikTok token error: {data}")
+        return redirect("/?msg=tiktok_error")
+
+
+@app.route("/tiktok-status")
+def tiktok_status():
+    has_token = os.path.exists(TIKTOK_TOKEN_FILE)
+    token_data = {}
+    if has_token:
+        with open(TIKTOK_TOKEN_FILE) as f:
+            token_data = json.load(f)
+    return jsonify({"connected": has_token, "open_id": token_data.get("open_id", ""), "saved_at": token_data.get("saved_at", "")})
+
+
+@app.route("/tiktok-disconnect", methods=["POST"])
+def tiktok_disconnect():
+    if os.path.exists(TIKTOK_TOKEN_FILE):
+        os.remove(TIKTOK_TOKEN_FILE)
+        append_log("🔌 ยกเลิกการเชื่อมต่อ TikTok แล้ว")
+    return jsonify({"ok": True})
 
 
 # ===== Kaloclip Logic =====
