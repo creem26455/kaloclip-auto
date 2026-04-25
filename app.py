@@ -13,6 +13,14 @@ from datetime import datetime
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, redirect
 
+# APScheduler — daily cron ทุกวัน 09:00 (Asia/Bangkok)
+try:
+    from apscheduler.schedulers.background import BackgroundScheduler
+    from apscheduler.triggers.cron import CronTrigger
+    _HAS_SCHEDULER = True
+except ImportError:
+    _HAS_SCHEDULER = False
+
 app = Flask(__name__)
 
 STATE_FILE = "/data/state.json"
@@ -169,6 +177,37 @@ async def run_kaloclip():
     await bot.run()
 
 
+def _cron_run():
+    """เรียกจาก APScheduler ทุกวัน 09:00 Asia/Bangkok"""
+    global running
+    if running:
+        append_log("⏭ Cron: กำลังรันอยู่แล้ว ข้ามรอบนี้")
+        return
+    append_log("🕘 Cron: เริ่มรันประจำวัน")
+    running = True
+    try:
+        asyncio.run(run_kaloclip())
+    except Exception as e:
+        append_log(f"❌ Cron error: {e}")
+    finally:
+        running = False
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
+
+    # ตั้ง APScheduler (ถ้ามี package)
+    if _HAS_SCHEDULER:
+        scheduler = BackgroundScheduler(timezone="Asia/Bangkok")
+        scheduler.add_job(
+            _cron_run,
+            CronTrigger(hour=9, minute=0, timezone="Asia/Bangkok"),
+            id="daily_kaloclip",
+            replace_existing=True,
+        )
+        scheduler.start()
+        append_log("✅ Daily cron ตั้งแล้ว — รันทุกวัน 09:00 (Asia/Bangkok)")
+    else:
+        append_log("⚠️ APScheduler ไม่ได้ติดตั้ง — ไม่มี daily cron")
+
     app.run(host="0.0.0.0", port=port)
