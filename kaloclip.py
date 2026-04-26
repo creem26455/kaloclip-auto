@@ -1424,50 +1424,19 @@ class KaloclipBot:
             has_exit = any(t in ('ออก', 'Exit', 'Leave') for t in dialog_btns)
 
             if has_create and has_exit:
-                # Leave-without-creating dialog → กด สร้าง{n} เพื่อ start render
-                btn_txt2 = await page.evaluate("""
+                # Leave-without-creating dialog — render ได้เริ่มแล้วใน _fill_form
+                # → กด "ออก" เพื่อ dismiss dialog และ navigate ต่อไป รายการโปรด
+                # (ห้ามกด สร้าง{n} เพราะจะเริ่ม render ใหม่เปลือง credits)
+                await page.evaluate("""
                     () => {
                         const btn = Array.from(document.querySelectorAll('button'))
-                            .find(b => /^สร้าง\\s*\\d+/.test(b.textContent.trim())
+                            .find(b => ['ออก','Exit','Leave'].includes(b.textContent.trim())
                                        && b.offsetParent !== null);
-                        if (btn) { btn.click(); return btn.textContent.trim(); }
-                        return null;
+                        if (btn) btn.click();
                     }
                 """)
-                if btn_txt2:
-                    self.log(f"  ✅ [Pre-Phase1] กด '{btn_txt2}' จาก leave-dialog → Render เริ่ม")
-                    await page.wait_for_timeout(3000)
-                    # Navigate กลับไป รายการโปรด — ถ้า dialog ขึ้นซ้ำให้กด "ออก" (render ได้เริ่มแล้ว)
-                    for _nav_try in range(3):
-                        try:
-                            nav2 = page.locator('text="รายการโปรด"').first
-                            if await nav2.is_visible(timeout=5000):
-                                await nav2.click()
-                                await page.wait_for_timeout(2000)
-                                # ตรวจว่า dialog ขึ้นซ้ำไหม
-                                d2_btns = await page.evaluate("""
-                                    () => Array.from(document.querySelectorAll('button'))
-                                        .filter(b => b.offsetParent !== null)
-                                        .map(b => b.textContent.trim())
-                                """)
-                                has_exit = any(t in ('ออก', 'Exit', 'Leave') for t in d2_btns)
-                                if has_exit:
-                                    # กด "ออก" เพื่อออกไป รายการโปรด (render ได้เริ่มแล้ว)
-                                    await page.evaluate("""
-                                        () => {
-                                            const btn = Array.from(document.querySelectorAll('button'))
-                                                .find(b => ['ออก','Exit','Leave'].includes(b.textContent.trim())
-                                                           && b.offsetParent !== null);
-                                            if (btn) btn.click();
-                                        }
-                                    """)
-                                    self.log("  ✅ กด 'ออก' → ไป รายการโปรด (render เริ่มแล้ว)")
-                                    await page.wait_for_timeout(2000)
-                                else:
-                                    self.log(f"  ✅ Navigate กลับ รายการโปรด หลัง dialog (try {_nav_try+1})")
-                                break
-                        except Exception:
-                            await page.wait_for_timeout(2000)
+                self.log("  ✅ [Pre-Phase1] กด 'ออก' dismiss leave-dialog (render เริ่มแล้วใน _fill_form)")
+                await page.wait_for_timeout(2000)
             else:
                 # ไม่มี leave dialog → กด Escape ปิด modal อื่นๆ
                 await page.keyboard.press("Escape")
@@ -1480,6 +1449,29 @@ class KaloclipBot:
         # FIX: รอ status text ปรากฏก่อน (ยืนยันว่าอยู่หน้าถูก) แล้วค่อยรอให้หาย
         self.log("  [Phase 1] รอ render เสร็จ (max 15 นาที)...")
         try:
+            # Phase 1a-pre: dismiss leave-dialog ถ้ายังค้างอยู่ก่อนหา render status
+            try:
+                import re as _re3
+                p1a_btns = await page.evaluate("""
+                    () => Array.from(document.querySelectorAll('button'))
+                        .filter(b => b.offsetParent !== null)
+                        .map(b => b.textContent.trim())
+                """)
+                p1a_has_exit = any(t in ('ออก', 'Exit', 'Leave') for t in p1a_btns)
+                if p1a_has_exit:
+                    await page.evaluate("""
+                        () => {
+                            const btn = Array.from(document.querySelectorAll('button'))
+                                .find(b => ['ออก','Exit','Leave'].includes(b.textContent.trim())
+                                           && b.offsetParent !== null);
+                            if (btn) btn.click();
+                        }
+                    """)
+                    self.log("  ✅ [Phase 1a-pre] dismiss leave-dialog ที่ยังค้าง")
+                    await page.wait_for_timeout(2000)
+            except Exception as ep1a:
+                self.log(f"  ⚠️ Phase 1a-pre: {ep1a}")
+
             # Phase 1a: รอให้ render status ปรากฏ (ยืนยันว่าอยู่หน้า รายการโปรด จริง)
             self.log("  [Phase 1a] รอ render status text ปรากฏ (max 2 นาที)...")
             try:
