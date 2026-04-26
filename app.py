@@ -37,9 +37,9 @@ if not os.path.exists("/data"):
     OUTPUT_DIR = "data/downloads"
     TIKTOK_TOKEN_FILE = "data/tiktok_token.json"
 
-# TikTok OAuth config
-TIKTOK_CLIENT_KEY = os.environ.get("TIKTOK_CLIENT_KEY", "sbaw0vzwdnmbsq4cm8")
-TIKTOK_CLIENT_SECRET = os.environ.get("TIKTOK_CLIENT_SECRET", "blEY0aF1bTwOizgtVY6Jk0HmjeaA2vAh")
+# TikTok OAuth config (ใช้ Production key — ไม่มี sandbox restriction)
+TIKTOK_CLIENT_KEY = os.environ.get("TIKTOK_CLIENT_KEY", "awai8imabqjlf4hd")
+TIKTOK_CLIENT_SECRET = os.environ.get("TIKTOK_CLIENT_SECRET", "1owkHMTLgUAofa6DTP5zQvyuZCGu5Dah")
 TIKTOK_REDIRECT_URI = os.environ.get(
     "TIKTOK_REDIRECT_URI",
     "https://kaloclip-auto-production.up.railway.app/tiktok-callback"
