@@ -260,6 +260,16 @@ def tiktok_disconnect():
     return jsonify({"ok": True})
 
 
+# ===== TikTok URL Prefix Verification =====
+
+@app.route("/tiktokESmb9IKmb0pmd1Qgizk0YU1E1QOFQJXa.txt")
+def tiktok_verification():
+    """TikTok URL prefix verification file"""
+    return "tiktok-developers-site-verification=ESmb9IKmb0pmd1Qgizk0YU1E1QOFQJXa", 200, {
+        "Content-Type": "text/plain"
+    }
+
+
 # ===== Kaloclip Logic =====
 
 async def run_kaloclip():
