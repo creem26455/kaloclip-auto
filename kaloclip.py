@@ -447,11 +447,45 @@ class KaloclipBot:
             if not clicked:
                 self.log("  ❌ ไม่พบปุ่ม Generate เลย")
 
-        # ===== Dismiss notification popup =====
-        # หลังกด สร้าง — Kaloclip แสดง popup "ไม่ต้องรอ! เปิดการแจ้งเตือน..."
-        # ต้องกดปิดก่อนถึงจะ render ต่อได้
+        # ===== Dismiss notification popup / Credits confirmation =====
+        # หลังกด สร้าง — Kaloclip อาจแสดง 2 dialog:
+        #   A) Credits modal: "สร้าง16 | ยกเลิก | ออก" → ต้องกด "สร้าง{n}" ยืนยัน
+        #   B) Notification popup: "ไม่ต้องรอ! เปิดการแจ้งเตือน..." → ต้องปิด
         if clicked:
             await page.wait_for_timeout(2000)
+
+            # ── A: ตรวจ credits confirmation modal ("สร้าง" + ตัวเลข) ──
+            self.log("  💳 ตรวจ credits confirmation modal...")
+            credits_confirmed = False
+            try:
+                import re as _re
+                all_btns = await page.evaluate("""
+                    () => Array.from(document.querySelectorAll('button'))
+                        .filter(b => b.offsetParent !== null)
+                        .map(b => ({ text: b.textContent.trim(), idx: Array.from(document.querySelectorAll('button')).indexOf(b) }))
+                """)
+                for btn_info_c in all_btns:
+                    t = btn_info_c.get('text', '')
+                    if _re.match(r'^สร้าง\s*\d+', t):
+                        # คลิก confirm button
+                        await page.evaluate(f"""
+                            () => {{
+                                const btns = Array.from(document.querySelectorAll('button'))
+                                    .filter(b => b.offsetParent !== null);
+                                const target = btns.find(b => /^สร้าง\\s*\\d+/.test(b.textContent.trim()));
+                                if (target) target.click();
+                            }}
+                        """)
+                        self.log(f"  ✅ ยืนยัน credits: '{t}' → Render เริ่มแล้ว")
+                        credits_confirmed = True
+                        await page.wait_for_timeout(2000)
+                        break
+            except Exception as ec:
+                self.log(f"  ⚠️ credits check: {ec}")
+            if not credits_confirmed:
+                self.log("  ℹ️ ไม่พบ credits modal (หรือไม่ต้องยืนยัน)")
+
+            # ── B: ตรวจ notification popup ──
             self.log("  🔔 ตรวจ notification popup...")
             dismissed = False
             for dismiss_text in ["ไม่เป็นไร", "ไม่ต้องการ", "ข้าม", "Skip", "No thanks", "No"]:
@@ -466,12 +500,10 @@ class KaloclipBot:
                 except Exception:
                     continue
             if not dismissed:
-                # ลอง Ant Design modal cancel button
+                # ลอง Ant Design modal close (X button เท่านั้น — ไม่คลิก cancel)
                 for sel in [
-                    '.ant-modal-footer button:first-child',
                     '.ant-modal-close',
-                    '[class*="modal"] button:first-child',
-                    'button[class*="cancel"]',
+                    '[aria-label="Close"]',
                 ]:
                     try:
                         el = page.locator(sel).first
@@ -1357,6 +1389,25 @@ class KaloclipBot:
             self.log("  ❌ navigate ไป รายการโปรด ไม่สำเร็จหลัง 5 ครั้ง")
 
         await _snap("debug_video_list")
+
+        # ===== ปิด modal ที่ค้างอยู่ก่อน Phase 1 =====
+        self.log("  [Pre-Phase1] ปิด modal ที่ค้างอยู่ (ถ้ามี)...")
+        try:
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(1000)
+            # ลองปิด modal อีกรอบด้วย X button
+            for close_sel in ['.ant-modal-close', '[aria-label="Close"]', '[aria-label="close"]']:
+                try:
+                    el = page.locator(close_sel).first
+                    if await el.is_visible(timeout=500):
+                        await el.click()
+                        self.log(f"  ✅ ปิด modal: {close_sel}")
+                        await page.wait_for_timeout(800)
+                        break
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
         # ===== Phase 1: รอ render เสร็จ =====
         # สถานะวิดีโอ: รอคิว → กำลังประมวลผล → เสร็จสิ้น
