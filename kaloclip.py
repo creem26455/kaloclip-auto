@@ -1334,24 +1334,50 @@ class KaloclipBot:
         await page.wait_for_timeout(30_000)
         await _snap("debug_after_create")
 
-        # ===== Navigate ไป รายการโปรด =====
+        # ===== Navigate ไป รายการโปรด (retry 5 ครั้ง) =====
         self.log("  [Nav] Navigate ไป รายการโปรด...")
-        try:
-            nav = page.locator('text="รายการโปรด"').first
-            if await nav.is_visible(timeout=3000):
-                await nav.click()
-                await page.wait_for_timeout(2000)
-                self.log("  ✅ อยู่ที่ รายการโปรด แล้ว")
-        except Exception as e:
-            self.log(f"  ⚠️ nav error: {e}")
+        nav_success = False
+        for attempt in range(5):
+            try:
+                nav = page.locator('text="รายการโปรด"').first
+                if await nav.is_visible(timeout=5000):
+                    await nav.click()
+                    await page.wait_for_timeout(3000)
+                    self.log(f"  ✅ อยู่ที่ รายการโปรด แล้ว (attempt {attempt + 1})")
+                    nav_success = True
+                    break
+                else:
+                    self.log(f"  ⚠️ nav attempt {attempt + 1}: ไม่เห็น รายการโปรด — รอแล้วลองใหม่")
+                    await page.wait_for_timeout(4000)
+            except Exception as e:
+                self.log(f"  ⚠️ nav error attempt {attempt + 1}: {e}")
+                await page.wait_for_timeout(4000)
+
+        if not nav_success:
+            self.log("  ❌ navigate ไป รายการโปรด ไม่สำเร็จหลัง 5 ครั้ง")
 
         await _snap("debug_video_list")
 
         # ===== Phase 1: รอ render เสร็จ =====
         # สถานะวิดีโอ: รอคิว → กำลังประมวลผล → เสร็จสิ้น
-        # รอจนทั้ง "รอคิว" และ "กำลังประมวลผล" หายออกจากหน้า
+        # FIX: รอ status text ปรากฏก่อน (ยืนยันว่าอยู่หน้าถูก) แล้วค่อยรอให้หาย
         self.log("  [Phase 1] รอ render เสร็จ (max 15 นาที)...")
         try:
+            # Phase 1a: รอให้ render status ปรากฏ (ยืนยันว่าอยู่หน้า รายการโปรด จริง)
+            self.log("  [Phase 1a] รอ render status text ปรากฏ (max 2 นาที)...")
+            try:
+                await page.wait_for_function(
+                    """() => {
+                        const t = document.body.innerText;
+                        return t.includes('รอคิว') || t.includes('กำลังประมวลผล') || t.includes('เสร็จสิ้น');
+                    }""",
+                    timeout=120_000
+                )
+                self.log("  ✅ พบ render status — รอจนเสร็จ...")
+            except Exception as e1:
+                self.log(f"  ⚠️ Phase 1a timeout: ไม่พบ render status ({e1}) — หน้าอาจผิด")
+
+            # Phase 1b: รอจน render เสร็จ (รอคิว/กำลังประมวลผล หาย)
             await page.wait_for_function(
                 """() => {
                     const t = document.body.innerText;
