@@ -381,18 +381,19 @@ class KaloclipBot:
         await page.wait_for_timeout(5000)
 
         # ===== STEP 3 (ตรวจสอบสคริปต์) =====
-        # รอ script generate เสร็จ — ปุ่มจะเปลี่ยนจาก "กำลังโหลด..." → "สร้าง +10"
-        self.log("  [Step 3] รอ script generate เสร็จ (สูงสุด 90 วินาที)...")
+        # รอ script generate เสร็จ — ปุ่ม render จะเป็น "สร้าง" + ตัวเลข credits เช่น "สร้าง16"
+        # FIX: ใช้ regex /^สร้าง\s*\d+/ เพื่อไม่จับ tab "สร้างสคริปต์ด้วย AI" ผิดพลาด
+        self.log("  [Step 3] รอ render button (สร้าง+เลข) enabled (สูงสุด 120 วินาที)...")
         try:
             await page.wait_for_function(
-                # ปุ่ม generate จริงๆ คือ "สร้าง" (+ credit cost) ไม่ใช่ "สร้างวิดีโอ"
                 """() => Array.from(document.querySelectorAll('button'))
-                    .some(b => b.textContent.trim().startsWith('สร้าง') && !b.disabled)""",
-                timeout=90_000
+                    .some(b => /^สร้าง\\s*\\d+/.test(b.textContent.trim()) && !b.disabled
+                               && b.offsetParent !== null)""",
+                timeout=120_000
             )
-            self.log("  ✅ Script โหลดเสร็จ — พบปุ่ม สร้าง")
+            self.log("  ✅ Render button พร้อมแล้ว")
         except Exception:
-            self.log("  ⚠️ Script รอนาน — ดำเนินการต่อ")
+            self.log("  ⚠️ รอ render button timeout — ดำเนินการต่อ")
 
         # ตั้ง duration = 20S (bottom bar Step 3) — ใช้ method พิเศษ
         duration_ok = await self._set_duration_step3(page)
@@ -413,39 +414,29 @@ class KaloclipBot:
         if not duration_ok:
             raise Exception("❌ ตั้งค่า duration ไม่สำเร็จ (ยังเป็น 8S) — ยกเลิกการสร้างคลิป")
 
-        # กด สร้าง (ปุ่มจริงคือ "สร้าง +10" หรือ "สร้าง +XX")
-        self.log("  [Step 3] กด สร้าง...")
+        # กด render button (สร้าง + เลข credits เช่น "สร้าง16")
+        # FIX: ใช้ JS click กับ regex เพื่อหาปุ่มที่ถูกต้องและ enabled
+        self.log("  [Step 3] กด render button (สร้าง+เลข)...")
         clicked = False
-        for btn_text in ["สร้าง", "สร้างวิดีโอ", "Generate Video", "Generate", "ยืนยัน", "เริ่มสร้าง"]:
-            try:
-                btn = await page.query_selector(f'button:has-text("{btn_text}")')
-                if not btn:
-                    btn = await page.query_selector(f'text="{btn_text}"')
-                if btn:
-                    await btn.click(timeout=5000)
-                    self.log(f"  ✅ กด '{btn_text}'")
-                    clicked = True
-                    await page.wait_for_timeout(2000)
-                    break
-            except Exception as e:
-                self.log(f"  ⚠️ กด '{btn_text}': {e}")
+        try:
+            btn_txt = await page.evaluate("""
+                () => {
+                    const btn = Array.from(document.querySelectorAll('button'))
+                        .find(b => /^สร้าง\\s*\\d+/.test(b.textContent.trim())
+                                   && !b.disabled && b.offsetParent !== null);
+                    if (btn) { btn.click(); return btn.textContent.trim(); }
+                    return null;
+                }
+            """)
+            if btn_txt:
+                self.log(f"  ✅ JS กด render button: '{btn_txt}'")
+                clicked = True
+                await page.wait_for_timeout(2000)
+        except Exception as ej:
+            self.log(f"  ⚠️ JS render click: {ej}")
+
         if not clicked:
-            self.log("  ⚠️ ไม่พบปุ่ม สร้าง — ลอง locator สำรอง")
-            # fallback: ลอง locator แบบ startsWith
-            try:
-                btns = await page.query_selector_all('button')
-                for b in btns:
-                    txt = (await b.inner_text()).strip()
-                    if txt.startswith("สร้าง") and await b.is_visible():
-                        await b.click(timeout=5000)
-                        self.log(f"  ✅ fallback กด '{txt}'")
-                        clicked = True
-                        await page.wait_for_timeout(2000)
-                        break
-            except Exception as ef:
-                self.log(f"  ⚠️ fallback error: {ef}")
-            if not clicked:
-                self.log("  ❌ ไม่พบปุ่ม Generate เลย")
+            self.log("  ❌ ไม่พบ render button (สร้าง+เลข) — render อาจยังไม่พร้อม")
 
         # ===== Dismiss notification popup / Credits confirmation =====
         # หลังกด สร้าง — Kaloclip อาจแสดง 2 dialog:
@@ -1390,24 +1381,51 @@ class KaloclipBot:
 
         await _snap("debug_video_list")
 
-        # ===== ปิด modal ที่ค้างอยู่ก่อน Phase 1 =====
-        self.log("  [Pre-Phase1] ปิด modal ที่ค้างอยู่ (ถ้ามี)...")
+        # ===== Pre-Phase1: จัดการ dialog/modal ที่ค้างอยู่ =====
+        # กรณี 1: "leave without creating?" dialog — มี สร้าง{n} + ยกเลิก + ออก
+        #   → คลิก สร้าง{n} เพื่อ start render จาก dialog นี้
+        # กรณี 2: modal อื่นๆ → กด Escape
+        self.log("  [Pre-Phase1] ตรวจ dialog/modal...")
         try:
-            await page.keyboard.press("Escape")
-            await page.wait_for_timeout(1000)
-            # ลองปิด modal อีกรอบด้วย X button
-            for close_sel in ['.ant-modal-close', '[aria-label="Close"]', '[aria-label="close"]']:
-                try:
-                    el = page.locator(close_sel).first
-                    if await el.is_visible(timeout=500):
-                        await el.click()
-                        self.log(f"  ✅ ปิด modal: {close_sel}")
-                        await page.wait_for_timeout(800)
-                        break
-                except Exception:
-                    pass
-        except Exception:
-            pass
+            import re as _re2
+            # ตรวจหา leave-without-creating dialog (สร้าง+เลข + ออก ปรากฏพร้อมกัน)
+            dialog_btns = await page.evaluate("""
+                () => Array.from(document.querySelectorAll('button'))
+                    .filter(b => b.offsetParent !== null)
+                    .map(b => b.textContent.trim())
+            """)
+            has_create = any(_re2.match(r'^สร้าง\s*\d+', t) for t in dialog_btns)
+            has_exit = any(t in ('ออก', 'Exit', 'Leave') for t in dialog_btns)
+
+            if has_create and has_exit:
+                # Leave-without-creating dialog → กด สร้าง{n} เพื่อ start render
+                btn_txt2 = await page.evaluate("""
+                    () => {
+                        const btn = Array.from(document.querySelectorAll('button'))
+                            .find(b => /^สร้าง\\s*\\d+/.test(b.textContent.trim())
+                                       && b.offsetParent !== null);
+                        if (btn) { btn.click(); return btn.textContent.trim(); }
+                        return null;
+                    }
+                """)
+                if btn_txt2:
+                    self.log(f"  ✅ [Pre-Phase1] กด '{btn_txt2}' จาก leave-dialog → Render เริ่ม")
+                    await page.wait_for_timeout(2000)
+                    # Navigate กลับไป รายการโปรด อีกครั้ง
+                    try:
+                        nav2 = page.locator('text="รายการโปรด"').first
+                        if await nav2.is_visible(timeout=5000):
+                            await nav2.click()
+                            await page.wait_for_timeout(3000)
+                            self.log("  ✅ Navigate กลับ รายการโปรด หลัง dialog")
+                    except Exception:
+                        pass
+            else:
+                # ไม่มี leave dialog → กด Escape ปิด modal อื่นๆ
+                await page.keyboard.press("Escape")
+                await page.wait_for_timeout(800)
+        except Exception as epre:
+            self.log(f"  ⚠️ Pre-Phase1 dialog: {epre}")
 
         # ===== Phase 1: รอ render เสร็จ =====
         # สถานะวิดีโอ: รอคิว → กำลังประมวลผล → เสร็จสิ้น
