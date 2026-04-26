@@ -1520,7 +1520,8 @@ class KaloclipBot:
     # ===== TikTok Auto-Post =====
 
     async def _post_to_tiktok(self, video_path: str, product_name: str) -> str:
-        """Upload วิดีโอไปยัง TikTok Inbox (ผู้ใช้ edit & post เอง)
+        """Upload วิดีโอไปยัง TikTok แบบ Direct Post
+        พร้อม caption, hashtag และ AI-Generated Content Label
         คืนค่า publish_id ถ้าสำเร็จ, "" ถ้าข้าม
         """
         import httpx
@@ -1544,25 +1545,39 @@ class KaloclipBot:
             return ""
 
         file_size = os.path.getsize(video_path)
-        title = f"สินค้าน่าซื้อ! {product_name[:80]} 🛍️ #TikTokShop #affiliate"
+
+        # Caption + Hashtags (TikTok รองรับสูงสุด 2200 chars)
+        hashtags = "#TikTokShop #affiliate #สินค้าแนะนำ #ของดี #รีวิวสินค้า #ช้อปออนไลน์"
+        caption = f"สินค้าน่าซื้อ! {product_name[:150]} 🛍️\n\n{hashtags}"
 
         self.log(f"📤 TikTok: กำลัง upload {os.path.basename(video_path)} ({file_size//1024}KB)...")
+        self.log(f"  Caption: {caption[:120]}...")
 
         try:
-            # Step 1: Init upload (inbox = draft ให้ user publish เอง)
+            # Step 1: Init Direct Post (พร้อม post_info + AI Label)
             init_resp = httpx.post(
-                "https://open.tiktokapis.com/v2/post/publish/inbox/video/init/",
+                "https://open.tiktokapis.com/v2/post/publish/video/init/",
                 headers={
                     "Authorization": f"Bearer {access_token}",
                     "Content-Type": "application/json; charset=UTF-8",
                 },
                 json={
+                    "post_info": {
+                        "title": caption,                  # caption + hashtags
+                        "privacy_level": "PUBLIC_TO_EVERYONE",
+                        "disable_duet": False,
+                        "disable_comment": False,
+                        "disable_stitch": False,
+                        "ai_generated_video": True,        # 🤖 AI Label บังคับสำหรับคลิป AI
+                        "brand_content_toggle": False,
+                        "brand_organic_toggle": False,
+                    },
                     "source_info": {
                         "source": "FILE_UPLOAD",
                         "video_size": file_size,
                         "chunk_size": file_size,
                         "total_chunk_count": 1,
-                    }
+                    },
                 },
                 timeout=30,
             )
@@ -1597,7 +1612,7 @@ class KaloclipBot:
                 self.log(f"❌ TikTok upload failed: {upload_resp.status_code} {upload_resp.text[:200]}")
                 return ""
 
-            self.log(f"✅ TikTok: upload สำเร็จ! publish_id={publish_id} (บันทึกเป็น draft)")
+            self.log(f"✅ TikTok: โพสสำเร็จ! publish_id={publish_id} (Public + AI Label ✓)")
             return publish_id
 
         except Exception as e:
