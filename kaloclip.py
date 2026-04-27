@@ -1655,8 +1655,8 @@ class KaloclipBot:
     # ===== TikTok Auto-Post =====
 
     async def _post_to_tiktok(self, video_path: str, product_name: str) -> str:
-        """Upload วิดีโอไปยัง TikTok แบบ Direct Post
-        พร้อม caption, hashtag และ AI-Generated Content Label
+        """Upload วิดีโอไปยัง TikTok แบบ Inbox Upload (video.upload scope)
+        วิดีโอจะไปอยู่ใน Creator Inbox เพื่อ publish ต่อ
         คืนค่า publish_id ถ้าสำเร็จ, "" ถ้าข้าม
         """
         import httpx
@@ -1689,24 +1689,15 @@ class KaloclipBot:
         self.log(f"  Caption: {caption[:120]}...")
 
         try:
-            # Step 1: Init Direct Post (พร้อม post_info + AI Label)
+            # Step 1: Init Inbox Upload (video.upload scope — ไม่ต้องการ video.publish)
+            # วิดีโอจะไปอยู่ใน Creator Inbox → user publish เอง
             init_resp = httpx.post(
-                "https://open.tiktokapis.com/v2/post/publish/video/init/",
+                "https://open.tiktokapis.com/v2/post/publish/inbox/video/init/",
                 headers={
                     "Authorization": f"Bearer {access_token}",
                     "Content-Type": "application/json; charset=UTF-8",
                 },
                 json={
-                    "post_info": {
-                        "title": caption,                  # caption + hashtags
-                        "privacy_level": "PUBLIC_TO_EVERYONE",
-                        "disable_duet": False,
-                        "disable_comment": False,
-                        "disable_stitch": False,
-                        "ai_generated_video": True,        # 🤖 AI Label บังคับสำหรับคลิป AI
-                        "brand_content_toggle": False,
-                        "brand_organic_toggle": False,
-                    },
                     "source_info": {
                         "source": "FILE_UPLOAD",
                         "video_size": file_size,
@@ -1747,7 +1738,7 @@ class KaloclipBot:
                 self.log(f"❌ TikTok upload failed: {upload_resp.status_code} {upload_resp.text[:200]}")
                 return ""
 
-            self.log(f"✅ TikTok: โพสสำเร็จ! publish_id={publish_id} (Public + AI Label ✓)")
+            self.log(f"✅ TikTok: อัปโหลดสำเร็จ! publish_id={publish_id} (อยู่ใน Creator Inbox — กด Publish จาก TikTok App)")
             return publish_id
 
         except Exception as e:

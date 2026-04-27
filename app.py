@@ -183,7 +183,7 @@ def tiktok_auth():
     params = urllib.parse.urlencode({
         "client_key": TIKTOK_CLIENT_KEY,
         "response_type": "code",
-        "scope": "video.upload,video.publish",
+        "scope": "video.upload",
         "redirect_uri": TIKTOK_REDIRECT_URI,
         "state": state,
     })
