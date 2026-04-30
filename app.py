@@ -43,6 +43,7 @@ TIKTOK_REDIRECT_URI = os.environ.get(
     "TIKTOK_REDIRECT_URI",
     "https://kaloclip-auto-production.up.railway.app/tiktok-callback",
 )
+TIKTOK_MODE = os.environ.get("TIKTOK_MODE", "INBOX")
 
 running = False
 
