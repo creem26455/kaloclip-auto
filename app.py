@@ -237,6 +237,12 @@ def tiktok_disconnect():
     return jsonify({"ok": True})
 
 
+@app.route("/downloads/<path:filename>")
+def serve_download(filename):
+    from flask import send_from_directory
+    return send_from_directory(OUTPUT_DIR, filename)
+
+
 @app.route("/tiktokESmb9IKmb0pmd1Qgizk0YU1E1QOFQJXa.txt")
 def tiktok_verify():
     return ("tiktok-developers-site-verification=ESmb9IKmb0pmd1Qgizk0YU1E1QOFQJXa", 200,

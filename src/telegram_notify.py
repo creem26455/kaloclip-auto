@@ -37,16 +37,26 @@ def notify_video_done(
     duration: float,
     cost_usd: float,
     log=print,
+    video_url: str = "",
+    caption: str = "",
 ):
-    """แจ้งว่า video เสร็จแล้ว upload เข้า inbox"""
-    text = (
-        f"✅ <b>วิดีโอใหม่พร้อม Publish!</b>\n\n"
-        f"📝 <b>เรื่อง:</b> {title}\n"
-        f"🎬 <b>ความยาว:</b> {duration:.0f}s\n"
-        f"💰 <b>ต้นทุน:</b> ${cost_usd:.2f}\n"
-        f"🆔 <b>publish_id:</b> <code>{publish_id}</code>\n\n"
-        f"📱 เปิด TikTok App → Creator Inbox → กด Publish ได้เลย"
-    )
+    lines = [
+        f"✅ <b>วิดีโอใหม่พร้อม Post!</b>",
+        f"",
+        f"📝 <b>เรื่อง:</b> {title}",
+        f"🎬 <b>ความยาว:</b> {duration:.0f}s",
+        f"💰 <b>ต้นทุน:</b> ${cost_usd:.2f}",
+    ]
+    if video_url:
+        lines.append(f"📥 <b>ดาวน์โหลด:</b> {video_url}")
+    if caption:
+        lines.append(f"")
+        lines.append(f"📋 <b>Caption:</b>")
+        lines.append(f"<code>{caption[:800]}</code>")
+    if not video_url:
+        lines.append(f"")
+        lines.append(f"📱 TikTok → Creator Inbox → Publish")
+    text = "\n".join(lines)
     return send_message(text, log)
 
 

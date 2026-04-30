@@ -108,8 +108,18 @@ def run_one(token_file: str, output_dir: str, temp_dir: str, log=print) -> bool:
                 f.write(caption)
             log(f"📝 Caption saved: {caption_path.name}")
 
-        # 4. Upload + Publish TikTok (Direct Post = auto with caption + AI label)
-        if TIKTOK_MODE == "DIRECT_POST":
+        # 4. Upload / Post TikTok
+        base_url = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+        if base_url:
+            video_url = f"https://{base_url}/downloads/{out_path.name}"
+        else:
+            video_url = ""
+
+        if TIKTOK_MODE == "BROWSER_AUTO":
+            log(f"🌐 [4/4] BROWSER_AUTO mode — Claude จะโพสผ่าน browser")
+            publish_id = f"browser_{timestamp}"
+
+        elif TIKTOK_MODE == "DIRECT_POST":
             log(f"📤 [4/4] Direct Posting to TikTok (auto-publish)...")
             # Refresh token if needed
             client_key = os.environ.get("TIKTOK_CLIENT_KEY", "")
@@ -150,7 +160,14 @@ def run_one(token_file: str, output_dir: str, temp_dir: str, log=print) -> bool:
         db.mark_done(sid, publish_id, str(out_path), cost)
 
         # 5. Telegram
-        notify_video_done(title, publish_id, duration, cost, log=log)
+        caption_text = ""
+        if supplement_data and 'caption_path' in dir():
+            try:
+                caption_text = open(caption_path, encoding="utf-8").read()
+            except Exception:
+                pass
+        notify_video_done(title, publish_id, duration, cost, log=log,
+                          video_url=video_url, caption=caption_text)
 
         log(f"\n✅ DONE: Script #{sid} — publish_id={publish_id}")
         return True
