@@ -1,0 +1,12 @@
+.env
+CREDENTIALS.md
+API_XAI_GROK.txt
+API_ANTHROPIC_CLAUDE.txt
+__pycache__/
+*.pyc
+data/downloads/
+data/temp/
+*.mp4
+.venv/
+venv/
+.DS_Store
