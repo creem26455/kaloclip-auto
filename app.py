@@ -168,15 +168,15 @@ def status():
 def tiktok_auth():
     import secrets, urllib.parse
     state = secrets.token_urlsafe(16)
-    # v2: Add video.publish for Direct Post + auto-publish with caption/AI label
+    scope = "video.upload,video.publish" if TIKTOK_MODE == "DIRECT_POST" else "video.upload"
     params = urllib.parse.urlencode({
         "client_key": TIKTOK_CLIENT_KEY,
         "response_type": "code",
-        "scope": "video.upload,video.publish",
+        "scope": scope,
         "redirect_uri": TIKTOK_REDIRECT_URI,
         "state": state,
     })
-    log("🔑 เริ่ม TikTok OAuth (with video.publish scope)...")
+    log(f"🔑 เริ่ม TikTok OAuth (scope={scope})...")
     return redirect(f"https://www.tiktok.com/v2/auth/authorize/?{params}")
 
 
