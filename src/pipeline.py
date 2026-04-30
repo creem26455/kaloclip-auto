@@ -160,12 +160,7 @@ def run_one(token_file: str, output_dir: str, temp_dir: str, log=print) -> bool:
         db.mark_done(sid, publish_id, str(out_path), cost)
 
         # 5. Telegram
-        caption_text = ""
-        if supplement_data and 'caption_path' in dir():
-            try:
-                caption_text = open(caption_path, encoding="utf-8").read()
-            except Exception:
-                pass
+        caption_text = caption if supplement_data and 'caption' in locals() else ""
         notify_video_done(title, publish_id, duration, cost, log=log,
                           video_url=video_url, caption=caption_text)
 
